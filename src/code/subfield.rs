@@ -1,7 +1,6 @@
 //! The specified GF(16) embedded in Plonky3's tower (not raw polynomial-basis bits).
 use crate::BF128;
 use p3_binary_field::{BinaryField2, BinaryField4, TowerLevel};
-use p3_field::PrimeCharacteristicRing;
 
 const fn zeta_bits() -> u8 {
     12

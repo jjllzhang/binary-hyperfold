@@ -1,23 +1,48 @@
 # Binary HyperFold
 
-Research prototype under staged implementation. Mathematical specification `Binary_HyperFold.md`
-is supplied privately during development and is deliberately ignored, never tracked.
+Self-contained **research prototype under staged implementation**, based on the privately supplied
+`Binary_HyperFold.md`. That specification is ignored and must never be staged or committed.
 
-## Current stage
+## Implemented core
 
-Phase 1 implements the BF128 analytic distance and floating-point parameter search, plus an
-independent exact-rational check of the specification's section 9.2 example. The fine primal/dual
-evaluator is not yet available and returns an explicit unsupported result; it is not silently
-replaced by a looser bound. Small coding fields, Flock and the PCS are not completed at this stage.
+- Plonky3 pinned at `0d803737b681774186cd283b1fd2d8e493655c82`, no external path dependencies.
+- `BF128 = BinaryField128` in the tower basis (not GHASH raw bit representation).
+- Integer-ceiling analytic code-distance schedule, floating-point MCA query search, exact-rational
+  section 9.2 example checks. Auto base dimension is the smallest mu0 >= 4 with arity divisibility;
+  the paper example explicitly uses mu0=8. PrimalDual is still **unsupported** pending its evaluator.
+- Subfield bitplane maps, H2/H4 and unrolled H8, Cauchy baseline, additive RS, recursive encode/fold.
+- Interleaved degree-2 sumcheck, BLAKE3 BinaryChallenger, Plonky3 MerkleTreeMmcs, single and multipoint
+  openings. All claims are bound before gamma; m-point error includes mL/q, not L/q.
+- Exact field/hash payload accounting and separately reported bincode wire size. Intermediate queried
+  symbols are omitted and reconstructed before authenticating the corresponding Merkle row.
 
-Dependencies are fetched from pinned remote revisions; there are no external path dependencies.
-`BF128` is Plonky3's tower `BinaryField128`, not the differently represented `Ghash128`.
+## Validation and PCS measurement
 
 ```
 cargo check
 cargo test --release --no-default-features --features parallel
 python3 scripts/derive_params.py
+RUSTFLAGS="-C target-cpu=native" cargo run --release --bin bench_pcs -- \
+  --mu 20 --r 2,4,8 --c 2 --security-bits 100 --threads 32
+cargo bench --bench primitives
+python3 scripts/benchmark_pcs.py --mu 20 --r 2,4,8 --c 2 --out /tmp/hyperfold-run
 ```
 
-Tests validate selected mathematical identities; they are not a security proof. Floating-point
-search outputs alone are not certified numerical error bounds. No benchmark result is claimed yet.
+`proof_bytes` includes commitment root, OOD point/value and evaluation-proof field/hash payload;
+`wire_proof_bytes` also includes serde container framing. Commit includes encoding, Merkle and OOD
+sampling/evaluation as Protocol 4.1 requires. Setup, input generation/cloning and external claim
+computation are excluded. Open includes its protocol weight tables and sumcheck, not duplicate
+external evaluations in release. Verify checks all sumchecks, final scalar identity, and reconstructed
+Merkle openings against the public statement. Tests are mathematical/functional checks, **not a
+security proof**. The floating-point optimizer is not a rigorously rounded numerical certificate;
+the supplied exact script certifies the given section 9.2 rational example only.
+
+Public setup diagonals are generated from a caller-supplied public seed using ChaCha8. The note's
+independent-uniform setup theorem is an ideal distribution statement, not an information-theoretic
+claim about a finite deterministic PRNG seed. No benchmark campaign results are bundled or claimed.
+
+## Not yet implemented
+
+PrimalDual schedule generation, narrower base-field storage, and the end-to-end Flock adapter and
+Flock benchmarks remain work in progress. Flock option B (separate ring-switch sumcheck, followed by
+ordinary HyperFold opening) was selected; no placeholder Flock proof or timing is provided.
