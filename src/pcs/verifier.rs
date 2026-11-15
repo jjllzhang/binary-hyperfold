@@ -123,6 +123,7 @@ impl BinaryHyperFoldPcs {
             return false;
         }
         let base = base_code::encode(&proof.final_table, c.params.c.ilog2() as usize);
+        let betas: Vec<_> = challenges.iter().map(|alpha| eq_weights(alpha)).collect();
         for query in &proof.queries {
             let mut j = tr.index(c.n[c.d - 1]);
             let mut prev = None;
@@ -147,9 +148,7 @@ impl BinaryHyperFoldPcs {
                 {
                     return false;
                 }
-                let folded = self
-                    .code
-                    .fold_row(i, j, &rows[0], &eq_weights(&challenges[i - 1]));
+                let folded = self.code.fold_row(i, j, &rows[0], &betas[i - 1]);
                 if i == 1 {
                     if folded != base[j] {
                         return false;
