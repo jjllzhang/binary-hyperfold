@@ -54,7 +54,8 @@ impl HyperFoldableCode {
             .par_chunks_mut(self.r)
             .enumerate()
             .for_each(|(j, row)| {
-                for a in 0..self.r {
+                row[0] = symbol(&children[0], j);
+                for a in 1..self.r {
                     row[a] = symbol(&children[a], j) * self.twists[layer - 1][j * self.r + a];
                 }
                 self.matrix.apply(row, false);
