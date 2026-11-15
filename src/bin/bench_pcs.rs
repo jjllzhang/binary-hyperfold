@@ -35,6 +35,8 @@ struct Args {
     iters: usize,
     #[arg(long)]
     csv: Option<String>,
+    #[arg(long)]
+    schedule_json: Option<String>,
 }
 fn main() {
     let a = Args::parse();
@@ -48,6 +50,7 @@ fn main() {
         Box::new(io::stdout())
     };
     writeln!(output,"mu,r,c,security_bits,d,mu0,queries,distance,eta,delta,trial,commit_ms,open_ms,verify_ms,proof_bytes,wire_proof_bytes").unwrap();
+    let mut schedules = Vec::new();
     for &mu in &a.mu {
         for &r in &a.r {
             for &c in &a.c {
@@ -72,6 +75,10 @@ fn main() {
                 eprintln!(
                     "derived schedule (float search, not a numerical certificate): {config:?}"
                 );
+                schedules.push(config.clone());
+                if a.iters == 0 {
+                    continue;
+                }
                 let pcs = BinaryHyperFoldPcs::setup(config.clone(), [42; 32]);
                 let mut rng = ChaCha8Rng::seed_from_u64(8);
                 let message: Vec<_> = (0..1usize << mu)
@@ -96,5 +103,8 @@ fn main() {
                 }
             }
         }
+    }
+    if let Some(path) = a.schedule_json {
+        serde_json::to_writer_pretty(File::create(path).unwrap(), &schedules).unwrap();
     }
 }
