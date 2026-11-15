@@ -24,7 +24,7 @@ impl HyperFoldConfig {
  pub fn derive(p:&HyperFoldParams)->Result<Self,ConfigError>{
   if ![2,4,8].contains(&p.r)||![2,4].contains(&p.c)||p.ext_field_bits!=128||![16,32,64,128].contains(&p.base_field_bits){return Err(ConfigError::Unsupported("field/arity/rate"))}
   let nu=p.r.ilog2() as usize;
-  let mu_0=if let Some(m)=p.mu_0{m}else{[8usize,7,9,6].into_iter().filter(|&m|m<=p.mu&&(p.mu-m)%nu==0).min().ok_or(ConfigError::Unsupported("mu0"))?};
+  let mu_0=if let Some(m)=p.mu_0{m}else{(4..=p.mu).find(|&m|(p.mu-m)%nu==0).ok_or(ConfigError::Unsupported("mu0"))?};
   if mu_0>p.mu||(p.mu-mu_0)%nu!=0||p.mu>=usize::BITS as usize-2{return Err(ConfigError::Unsupported("dimension"))}
   if mu_0+p.c.ilog2() as usize>p.base_field_bits{return Err(ConfigError::Unsupported("base code evaluation domain exceeds base field"))}
   let d=(p.mu-mu_0)/nu;let k:Vec<_>=(0..=d).map(|i|1usize<<(mu_0+nu*i)).collect();let n:Vec<_>=k.iter().map(|x|p.c*x).collect();
@@ -35,3 +35,5 @@ impl HyperFoldConfig {
 }
 
 #[cfg(test)]mod tests {use super::*;#[test]fn smallest_base_dimension(){for mu in [18,24]{let c=HyperFoldConfig::derive(&HyperFoldParams{mu,r:8,..Default::default()}).unwrap();assert_eq!(c.mu_0,6);assert_eq!(c.d,(mu-6)/3);assert_eq!(c.k[0],64);}}}
+
+#[cfg(test)]mod final_rule {use super::*;#[test]fn lower_bound_four(){for (mu,r,want) in [(20,2,4),(20,4,4),(20,8,5),(18,8,6)]{let c=HyperFoldConfig::derive(&HyperFoldParams{mu,r,..Default::default()}).unwrap();assert_eq!(c.mu_0,want);}}}
