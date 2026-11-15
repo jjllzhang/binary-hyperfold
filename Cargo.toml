@@ -1,0 +1,36 @@
+[package]
+name = "binary-hyperfold"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["parallel"]
+parallel = ["p3-maybe-rayon/parallel", "p3-binary-field/parallel", "p3-binary-dft/parallel", "p3-merkle-tree/parallel"]
+
+[dependencies]
+p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-binary-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-binary-dft = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-blake3 = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+p3-util = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
+rayon = "1.10"
+blake3 = "1.5"
+rand = "0.10"
+rand_chacha = "0.10"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"
+thiserror = "2"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
