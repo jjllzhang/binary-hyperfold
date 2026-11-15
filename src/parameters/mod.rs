@@ -69,9 +69,8 @@ impl HyperFoldConfig {
         let mu_0 = if let Some(m) = p.mu_0 {
             m
         } else {
-            [8, 7, 6, 9]
-                .into_iter()
-                .find(|&m| m <= p.mu && (p.mu - m) % nu == 0)
+            (4..=p.mu)
+                .find(|&m| (p.mu - m) % nu == 0)
                 .ok_or(ConfigError::Unsupported("mu0"))?
         };
         if mu_0 > p.mu || (p.mu - mu_0) % nu != 0 || p.mu >= usize::BITS as usize - 2 {
@@ -104,5 +103,41 @@ impl HyperFoldConfig {
             queries,
             epsilon_field,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn smallest_base_dimension() {
+        for mu in [18, 24] {
+            let c = HyperFoldConfig::derive(&HyperFoldParams {
+                mu,
+                r: 8,
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(c.mu_0, 6);
+            assert_eq!(c.d, (mu - 6) / 3);
+            assert_eq!(c.k[0], 64);
+        }
+    }
+}
+
+#[cfg(test)]
+mod final_rule {
+    use super::*;
+    #[test]
+    fn lower_bound_four() {
+        for (mu, r, want) in [(20, 2, 4), (20, 4, 4), (20, 8, 5), (18, 8, 6)] {
+            let c = HyperFoldConfig::derive(&HyperFoldParams {
+                mu,
+                r,
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(c.mu_0, want);
+        }
     }
 }
