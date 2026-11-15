@@ -21,8 +21,8 @@ p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d8037
 p3-util = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
 rayon = "1.10"
 blake3 = "1.5"
-rand = "0.9"
-rand_chacha = "0.9"
+rand = "0.10"
+rand_chacha = "0.10"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 bincode = "1.3"
