@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["parallel"]
+default = ["parallel", "flock"]
 parallel = ["p3-maybe-rayon/parallel", "p3-binary-field/parallel", "p3-binary-dft/parallel", "p3-merkle-tree/parallel"]
+
+flock = ["dep:flock-field", "dep:flock-hash", "dep:flock-merkle", "dep:flock-multilinear", "dep:flock-parallel", "dep:flock-transcript", "dep:flock-core", "dep:flock-prover"]
 
 [dependencies]
 p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "0d803737b681774186cd283b1fd2d8e493655c82" }
@@ -28,6 +30,15 @@ serde = { version = "1", features = ["derive"] }
 bincode = "1.3"
 thiserror = "2"
 
+flock-field = { git = "https://github.com/succinctlabs/flock.git", rev = "dcd17533128a595e475b3dbba56c3dc2ad65161f", optional = true }
+flock-hash = { git = "https://github.com/succinctlabs/flock.git", rev = "dcd17533128a595e475b3dbba56c3dc2ad65161f", optional = true }
+flock-merkle = { git = "https://github.com/succinctlabs/flock.git", rev = "dcd17533128a595e475b3dbba56c3dc2ad65161f", optional = true }
+flock-multilinear = { git = "https://github.com/succinctlabs/flock.git", rev = "dcd17533128a595e475b3dbba56c3dc2ad65161f", optional = true }
+flock-parallel = { git = "https://github.com/succinctlabs/flock.git", rev = "dcd17533128a595e475b3dbba56c3dc2ad65161f", optional = true }
+flock-transcript = { git = "https://github.com/succinctlabs/flock.git", rev = "dcd17533128a595e475b3dbba56c3dc2ad65161f", optional = true }
+flock-core = { git = "https://github.com/succinctlabs/flock.git", rev = "dcd17533128a595e475b3dbba56c3dc2ad65161f", optional = true }
+flock-prover = { git = "https://github.com/succinctlabs/flock.git", rev = "dcd17533128a595e475b3dbba56c3dc2ad65161f", optional = true }
+
 [dev-dependencies]
 criterion = "0.5"
 
@@ -38,3 +49,7 @@ codegen-units = 1
 [[bench]]
 name = "primitives"
 harness = false
+
+[[bin]]
+name = "bench_flock"
+required-features = ["flock"]

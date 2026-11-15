@@ -41,8 +41,41 @@ Public setup diagonals are generated from a caller-supplied public seed using Ch
 independent-uniform setup theorem is an ideal distribution statement, not an information-theoretic
 claim about a finite deterministic PRNG seed. No benchmark campaign results are bundled or claimed.
 
-## Not yet implemented
+## Flock adapter (option B)
 
-PrimalDual schedule generation, narrower base-field storage, and the end-to-end Flock adapter and
-Flock benchmarks remain work in progress. Flock option B (separate ring-switch sumcheck, followed by
-ordinary HyperFold opening) was selected; no placeholder Flock proof or timing is provided.
+The optional `flock` feature is enabled by default. Dependencies are pinned to Flock
+`dcd17533128a595e475b3dbba56c3dc2ad65161f`. The adapter uses a genuine field isomorphism
+between GHASH and the tower (not a raw-bit reinterpretation). It runs Flock's Boolean zerocheck
+and lincheck, ring-switches both resulting claims, and performs a separate linear-cost sumcheck
+before an ordinary HyperFold opening. The Flock transcript fixes the public circuit/commitment
+and reduction messages; the separate domain-separated HyperFold transcript binds the same
+commitment and the resulting point/value. No Ligerito verification step is skipped or error ignored.
+
+```
+cargo test --release
+RUSTFLAGS="-C target-cpu=native" cargo run --release --bin bench_flock -- \
+  --hash blake3 --log2-batches 10 --r 2,4,8 --threads 32
+# Also supports --hash sha256.
+```
+
+The benchmark compares the same fast-generated row-major Flock witness/a/b/lincheck buffers.
+Input clones for repeated proving, setup and R1CS construction are outside timing. `witness_ms`
+records actual witness and auxiliary packing once and is added to every reported total. Commit
+includes the GHASH→tower conversion. `ring_switch_ms` includes option B's extra standalone
+sumcheck pass; Ligerito's corresponding work is fused into `open_ms` and shown as `fused-in-open`,
+not a fabricated separate zero-time phase. Overall wall time includes preparation, transcript,
+allocation and cleanup outside individual phase windows. Total proof KB is actual bincode framing,
+not the pure PCS payload metric. These metrics are deliberately distinguished.
+
+Ligerito uses its upstream Fast100 profile. HyperFold uses the 100-bit-target PCS schedule with
+Flock's no-grinding PIOP path. This does not assert a complete composition security certificate or
+identical security assumptions. The adapter exposes a circuit-satisfaction research R1CS proof,
+not a separate public digest/input statement binding API. Upstream Flock may use helper threads
+in addition to its configured Rayon pools; `--threads` fixes both Rayon pools, not every OS thread.
+No formal campaign or exclusive-host claim is made by the supplied smoke tests.
+
+## Still pending
+
+PrimalDual schedule generation and narrower base-field storage remain work in progress.
+The core path currently stores BF128. The distance optimizer and full-SNARK composition do not
+constitute a formal security proof.
