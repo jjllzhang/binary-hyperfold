@@ -1,3 +1,5 @@
 /target
 *.csv
 Binary_HyperFold.md
+
+__pycache__/
