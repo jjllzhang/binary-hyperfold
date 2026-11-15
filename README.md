@@ -1,6 +1,6 @@
 # Binary HyperFold
 
-Self-contained **research prototype under staged implementation**, based on the privately supplied
+Self-contained **research prototype**, based on the privately supplied
 `Binary_HyperFold.md`. That specification is ignored and must never be staged or committed.
 
 ## Implemented core
@@ -9,7 +9,8 @@ Self-contained **research prototype under staged implementation**, based on the 
 - `BF128 = BinaryField128` in the tower basis (not GHASH raw bit representation).
 - Integer-ceiling analytic code-distance schedule, floating-point MCA query search, exact-rational
   section 9.2 example checks. Auto base dimension is the smallest mu0 >= 4 with arity divisibility;
-  the paper example explicitly uses mu0=8. PrimalDual is still **unsupported** pending its evaluator.
+  the paper example explicitly uses mu0=8. PrimalDual searches a grouped B_fine upper envelope
+  jointly for primal/dual thresholds (not an exact B_fine/global-minimum solver).
 - Subfield bitplane maps, H2/H4 and unrolled H8, Cauchy baseline, additive RS, recursive encode/fold.
 - Interleaved degree-2 sumcheck, BLAKE3 BinaryChallenger, Plonky3 MerkleTreeMmcs, single and multipoint
   openings. All claims are bound before gamma; m-point error includes mL/q, not L/q.
@@ -35,7 +36,7 @@ computation are excluded. Open includes its protocol weight tables and sumcheck,
 external evaluations in release. Verify checks all sumchecks, final scalar identity, and reconstructed
 Merkle openings against the public statement. Tests are mathematical/functional checks, **not a
 security proof**. The floating-point optimizer is not a rigorously rounded numerical certificate;
-the supplied exact script certifies the given section 9.2 rational example only.
+the included reference tool certifies exported schedules as described below.
 
 Public setup diagonals are generated from a caller-supplied public seed using ChaCha8. The note's
 independent-uniform setup theorem is an ideal distribution statement, not an information-theoretic
@@ -74,8 +75,38 @@ not a separate public digest/input statement binding API. Upstream Flock may use
 in addition to its configured Rayon pools; `--threads` fixes both Rayon pools, not every OS thread.
 No formal campaign or exclusive-host claim is made by the supplied smoke tests.
 
-## Still pending
+## Parameter export and independent verification
 
-PrimalDual schedule generation and narrower base-field storage remain work in progress.
-The core path currently stores BF128. The distance optimizer and full-SNARK composition do not
-constitute a formal security proof.
+```
+cargo build --release --bin bench_pcs
+python3 scripts/derive_params.py --generate --mu 20 --r 2,4,8 --c 2,4 \
+  --distance-mode primal-dual --output /tmp/schedule.json
+# Or: bench_pcs --iters 0 --schedule-json /tmp/schedule.json [other flags]
+python3 scripts/derive_params.py --verify-json /tmp/schedule.json
+cd scripts && python3 -m unittest -v test_fine_bound
+```
+
+The Rust log-space search proposes thresholds/queries; it is **not** directed arithmetic.
+`derive_params.py` checks every primal and dual endpoint with the independent Decimal-interval
+reference evaluator, then checks the distance, radius and full setup/field/query budget using
+exact rational inequalities. For Analytic it checks integer ceilings and Bernoulli conditions
+instead. The automatic benchmark runner performs this check before measuring each configuration.
+The certificates exclude Fiat–Shamir, Merkle, deterministic public-setup PRNG and outer Flock errors.
+The setup theorem is conditional on the ideal random code ensemble, not a seed security proof.
+
+The reference files `fine_bound.py`, `binomial_interval.py`, `source-helpers/arithmetic.py` and
+`test_fine_bound.py` were supplied by Theorist in the 2026-11-15 parameter audit. Method:
+`fine_group_binomial_geometric_upper_with_coarse_min`; `exact_Bfine_minimum_claimed=False`.
+The Rust port uses exact integer mode ratios, conservative mathematical envelopes with floating
+logs, and rejects unsupported fast-field conditions. It currently limits fine search to mu<=32.
+Run the independent verifier for **each** newly used configuration; matching the examples alone
+is not a numerical certificate for other configurations.
+
+`--base-field-bits 16|32|64|128` controls the encoding field (public twists and base-code domain);
+all challenges, folded tables, storage and proof field elements remain BF128. This is a scalar
+extension of the base-field code, **not** a narrow-storage/arithmetic optimization. Top benchmark
+inputs are sampled in the chosen subfield; reported bytes are actual 16-byte field payloads.
+The analytic setup bound usually cannot meet 100 bits with a small base field. Fine mode may work,
+for example `--mu 20 --mu0 8 --r 4 --c 2 --base-field-bits 32 --distance-mode primal-dual`.
+The fast method has explicit large-field preconditions and can report unsupported configurations;
+that is not a claim that no other bound or protocol parameter can work.

@@ -70,3 +70,34 @@ fn sumcheck_matches_naive() {
         }
     }
 }
+
+#[test]
+fn primal_dual_subfield_codes_roundtrip() {
+    use binary_hyperfold::parameters::DistanceMode;
+    let mut rng = ChaCha8Rng::seed_from_u64(7);
+    for w in [16usize, 32, 64, 128] {
+        for r in [2usize, 4, 8] {
+            let p = HyperFoldParams {
+                mu: 4 + 2 * r.ilog2() as usize,
+                r,
+                base_field_bits: w,
+                distance_mode: DistanceMode::PrimalDual,
+                ..Default::default()
+            };
+            let pcs = BinaryHyperFoldPcs::setup(HyperFoldConfig::derive(&p).unwrap(), [9; 32]);
+            // The top input lies in the encoding subfield; challenges and
+            // folded messages still use its BF128 scalar extension.
+            let mask = u128::MAX >> (128 - w);
+            let m: Vec<_> = (0..1 << p.mu)
+                .map(|_| BF128::from_repr(rng.random::<u128>() & mask))
+                .collect();
+            let encoded = pcs.code.encode(pcs.config.d, &m);
+            assert!(encoded.values.iter().all(|x| x.to_repr() & !mask == 0));
+            let point: Vec<_> = (0..p.mu).map(|_| BF128::from_repr(rng.random())).collect();
+            let value = sumcheck::evaluate(&m, &point);
+            let (cm, data) = pcs.commit(m);
+            let proof = pcs.open(&data, point.clone(), value);
+            pcs.verify(&cm, point, value, &proof).unwrap();
+        }
+    }
+}

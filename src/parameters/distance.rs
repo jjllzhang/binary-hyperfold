@@ -5,11 +5,26 @@ pub fn derive(
     p: &HyperFoldParams,
     k: &[usize],
     n: &[usize],
-) -> Result<(Vec<usize>, f64, f64), ConfigError> {
+) -> Result<(Vec<usize>, Vec<usize>, f64, f64), ConfigError> {
     if matches!(p.distance_mode, DistanceMode::PrimalDual) {
-        return Err(ConfigError::Unsupported(
-            "PrimalDual evaluator not yet implemented",
-        ));
+        let (t, dual) = super::fine::chain(
+            p.mu,
+            p.mu_0.unwrap_or_else(|| {
+                (4..=p.mu)
+                    .find(|m| (p.mu - m) % (p.r.ilog2() as usize) == 0)
+                    .unwrap()
+            }),
+            p.r,
+            p.c,
+            p.base_field_bits,
+            p.security_bits,
+        )?;
+        let delta = n
+            .iter()
+            .zip(&t)
+            .map(|(&n, &t)| (n - t + 1) as f64 / n as f64)
+            .fold(1.0, f64::min);
+        return Ok((t, dual, delta, 2f64.powi(-((p.security_bits + 1) as i32))));
     }
     let mut t = vec![k[0]];
     for i in 1..n.len() {
@@ -25,5 +40,5 @@ pub fn derive(
     if t.iter().any(|&t| (t as f64 + 1.0) * 2.0 >= q) || delta <= 0.0 {
         return Err(ConfigError::NoBudget);
     }
-    Ok((t, delta, 2.0 * (n.len() - 1) as f64 / q))
+    Ok((t, vec![], delta, 2.0 * (n.len() - 1) as f64 / q))
 }

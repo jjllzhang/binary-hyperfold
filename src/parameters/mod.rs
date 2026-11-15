@@ -1,4 +1,5 @@
 pub mod distance;
+pub mod fine;
 pub mod soundness;
 use crate::pcs::error::ConfigError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -48,6 +49,7 @@ pub struct HyperFoldConfig {
     pub k: Vec<usize>,
     pub n: Vec<usize>,
     pub thresholds: Vec<usize>,
+    pub dual_thresholds: Vec<usize>,
     pub distance: f64,
     pub epsilon_code: f64,
     pub eta: f64,
@@ -84,7 +86,7 @@ impl HyperFoldConfig {
         let d = (p.mu - mu_0) / nu;
         let k: Vec<_> = (0..=d).map(|i| 1usize << (mu_0 + nu * i)).collect();
         let n: Vec<_> = k.iter().map(|x| p.c * x).collect();
-        let (thresholds, distance, epsilon_code) = distance::derive(p, &k, &n)?;
+        let (thresholds, dual_thresholds, distance, epsilon_code) = distance::derive(p, &k, &n)?;
         let (eta, delta, list_size, queries, epsilon_field) =
             soundness::optimize(p, nu, d, &n, distance, epsilon_code)?;
         Ok(Self {
@@ -95,6 +97,7 @@ impl HyperFoldConfig {
             k,
             n,
             thresholds,
+            dual_thresholds,
             distance,
             epsilon_code,
             eta,

@@ -95,6 +95,8 @@ dependencies = [
  "flock-parallel",
  "flock-prover",
  "flock-transcript",
+ "num-bigint",
+ "num-traits",
  "p3-binary-dft",
  "p3-binary-field",
  "p3-blake3",
@@ -110,6 +112,7 @@ dependencies = [
  "rand_chacha",
  "rayon",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
