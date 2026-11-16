@@ -101,3 +101,6 @@ impl BinaryHyperFoldPcs {
 pub(crate) fn cap(root: [u8; 32]) -> MerkleCap<BF128, [u8; 32]> {
     MerkleCap::new(vec![root])
 }
+
+pub mod native64;
+pub use native64::BinaryHyperFoldPcs64;

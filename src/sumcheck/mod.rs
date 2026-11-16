@@ -27,3 +27,15 @@ pub fn evaluate(table: &[BF128], point: &[BF128]) -> BF128 {
     }
     v[0]
 }
+
+pub fn evaluate_base(table: &[crate::BF64], point: &[BF128]) -> BF128 {
+    assert_eq!(table.len(), 1 << point.len());
+    if point.is_empty() {
+        return BF128::from(table[0]);
+    }
+    let mut v = prover::fold_table_base(table, 0, point[0]);
+    for &a in &point[1..] {
+        prover::fold_table(&mut v, 0, a);
+    }
+    v[0]
+}

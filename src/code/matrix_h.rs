@@ -1,7 +1,7 @@
 use super::subfield::*;
-use crate::BF128;
 pub use crate::parameters::MatrixKind;
-use p3_binary_field::TowerLevel;
+use crate::{BF64, BF128};
+use p3_binary_field::{BinaryField4, TowerLevel};
 use p3_field::{Field, PrimeCharacteristicRing};
 
 pub fn apply_h2(x: &mut [BF128]) {
@@ -44,9 +44,9 @@ pub fn apply_h8(x: &mut [BF128]) {
     let v3 = x[0] + v2;
     let v4 = v0 + v1;
     let v5 = x[4] + x[5];
-    let v6 = x[4] + mul_f16_const(v5, 12);
+    let v6 = x[4] + mul_f16_const(v5, BinaryField4::from_repr(12));
     let v7 = x[6] + x[7];
-    let v8 = x[6] + mul_f16_const(v7, 14);
+    let v8 = x[6] + mul_f16_const(v7, BinaryField4::from_repr(14));
     let v9 = v6 + v8;
     let v10 = v5 + v7;
     let v11 = v6 + mul_omega(v9);
@@ -63,26 +63,107 @@ pub fn apply_h8(x: &mut [BF128]) {
     let v22 = v18 + v14;
     let v23 = v19 + v15;
     let v24 = v20 + v16;
-    let v25 = v17 + mul_f16_const(v19, 12);
-    let v26 = v18 + mul_f16_const(v20, 12);
+    let v25 = v17 + mul_f16_const(v19, BinaryField4::from_repr(12));
+    let v26 = v18 + mul_f16_const(v20, BinaryField4::from_repr(12));
     let v27 = v25 + v19;
     let v28 = v26 + v20;
-    let v29 = v25 + mul_f16_const(v26, 6);
+    let v29 = v25 + mul_f16_const(v26, BinaryField4::from_repr(6));
     let v30 = v29 + v26;
-    let v31 = v27 + mul_f16_const(v28, 4);
+    let v31 = v27 + mul_f16_const(v28, BinaryField4::from_repr(4));
     let v32 = v31 + v28;
-    let v33 = v21 + mul_f16_const(v23, 14);
-    let v34 = v22 + mul_f16_const(v24, 14);
+    let v33 = v21 + mul_f16_const(v23, BinaryField4::from_repr(14));
+    let v34 = v22 + mul_f16_const(v24, BinaryField4::from_repr(14));
     let v35 = v33 + v23;
     let v36 = v34 + v24;
-    let v37 = v33 + mul_f16_const(v34, 10);
+    let v37 = v33 + mul_f16_const(v34, BinaryField4::from_repr(10));
     let v38 = v37 + v34;
-    let v39 = v35 + mul_f16_const(v36, 8);
+    let v39 = v35 + mul_f16_const(v36, BinaryField4::from_repr(8));
     let v40 = v39 + v36;
     x.copy_from_slice(&[v29, v30, v31, v32, v37, v38, v39, v40]);
 }
 pub fn apply_h8_inv(x: &mut [BF128]) {
     apply_h8(x)
+}
+
+pub fn apply_h2_64(x: &mut [BF64]) {
+    let a = x[0] + x[1];
+    x[1] = a + mul_omega_plus_1_64(x[1]);
+    x[0] = a;
+}
+pub fn apply_h2_inv_64(x: &mut [BF64]) {
+    x[1] = mul_omega_64(x[0] + x[1]);
+    x[0] += x[1];
+}
+pub fn apply_h4_64(x: &mut [BF64]) {
+    let [mut a, mut b, mut c, mut d]: [BF64; 4] = x.try_into().unwrap();
+    c += d;
+    a += b;
+    b = mul_zeta_64(b + c);
+    c += mul_zeta_64(a);
+    d = mul_zeta_64(d + b);
+    a += d;
+    b += a;
+    d += c;
+    x.copy_from_slice(&[a, b, c, d]);
+}
+pub fn apply_h4_inv_64(x: &mut [BF64]) {
+    let [mut a, mut b, mut c, mut d]: [BF64; 4] = x.try_into().unwrap();
+    d += c;
+    b += a;
+    a += d;
+    d = mul_zeta_inv_64(d) + b;
+    c += mul_zeta_64(a);
+    b = mul_zeta_inv_64(b) + c;
+    a += b;
+    c += d;
+    x.copy_from_slice(&[a, b, c, d]);
+}
+pub fn apply_h8_64(x: &mut [BF64]) {
+    let v0 = x[0] + x[1];
+    let v1 = x[2] + x[3];
+    let v2 = x[2] + mul_omega_64(v1);
+    let v3 = x[0] + v2;
+    let v4 = v0 + v1;
+    let v5 = x[4] + x[5];
+    let v6 = x[4] + mul_f16_const_64(v5, BinaryField4::from_repr(12));
+    let v7 = x[6] + x[7];
+    let v8 = x[6] + mul_f16_const_64(v7, BinaryField4::from_repr(14));
+    let v9 = v6 + v8;
+    let v10 = v5 + v7;
+    let v11 = v6 + mul_omega_64(v9);
+    let v12 = v5 + mul_omega_64(v10);
+    let v13 = x[0] + v11;
+    let v14 = v0 + v12;
+    let v15 = v3 + v9;
+    let v16 = v4 + v10;
+    let v17 = x[0] + mul_omega_64(v13);
+    let v18 = v0 + mul_omega_64(v14);
+    let v19 = v3 + mul_omega_64(v15);
+    let v20 = v4 + mul_omega_64(v16);
+    let v21 = v17 + v13;
+    let v22 = v18 + v14;
+    let v23 = v19 + v15;
+    let v24 = v20 + v16;
+    let v25 = v17 + mul_f16_const_64(v19, BinaryField4::from_repr(12));
+    let v26 = v18 + mul_f16_const_64(v20, BinaryField4::from_repr(12));
+    let v27 = v25 + v19;
+    let v28 = v26 + v20;
+    let v29 = v25 + mul_f16_const_64(v26, BinaryField4::from_repr(6));
+    let v30 = v29 + v26;
+    let v31 = v27 + mul_f16_const_64(v28, BinaryField4::from_repr(4));
+    let v32 = v31 + v28;
+    let v33 = v21 + mul_f16_const_64(v23, BinaryField4::from_repr(14));
+    let v34 = v22 + mul_f16_const_64(v24, BinaryField4::from_repr(14));
+    let v35 = v33 + v23;
+    let v36 = v34 + v24;
+    let v37 = v33 + mul_f16_const_64(v34, BinaryField4::from_repr(10));
+    let v38 = v37 + v34;
+    let v39 = v35 + mul_f16_const_64(v36, BinaryField4::from_repr(8));
+    let v40 = v39 + v36;
+    x.copy_from_slice(&[v29, v30, v31, v32, v37, v38, v39, v40]);
+}
+pub fn apply_h8_inv_64(x: &mut [BF64]) {
+    apply_h8_64(x)
 }
 
 #[derive(Clone, Debug)]
