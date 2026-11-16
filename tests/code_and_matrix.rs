@@ -21,7 +21,10 @@ fn subfield_identities_and_scaling() {
     for _ in 0..16 {
         let x = BF128::from_repr(rng.random());
         for c in 0..16 {
-            assert_eq!(mul_f16_const(x, c), x * f16(c));
+            assert_eq!(
+                mul_f16_const(x, p3_binary_field::BinaryField4::from_repr(c)),
+                x * f16(c)
+            );
         }
         assert_eq!(mul_zeta_inv(mul_zeta(x)), x);
     }

@@ -1,7 +1,7 @@
 use binary_hyperfold::{
-    BF128,
+    BF64, BF128,
     parameters::{DistanceMode, HyperFoldConfig, HyperFoldParams, MatrixKind},
-    pcs::BinaryHyperFoldPcs,
+    pcs::{BinaryHyperFoldPcs, BinaryHyperFoldPcs64},
     sumcheck,
 };
 use clap::Parser;
@@ -31,6 +31,8 @@ struct Args {
     distance_mode: String,
     #[arg(long, default_value = "specialized")]
     matrix: String,
+    #[arg(long, default_value = "bf128", value_parser = ["bf128", "bf64"])]
+    storage: String,
     #[arg(long, default_value_t = 32)]
     threads: usize,
     #[arg(long, default_value_t = 1)]
@@ -44,6 +46,9 @@ struct Args {
 }
 fn main() {
     let a = Args::parse();
+    if a.storage == "bf64" {
+        assert!(a.base_field_bits == 64 && a.matrix == "specialized");
+    }
     rayon::ThreadPoolBuilder::new()
         .num_threads(a.threads)
         .build_global()
@@ -53,7 +58,7 @@ fn main() {
     } else {
         Box::new(io::stdout())
     };
-    writeln!(output,"mu,r,c,base_field_bits,security_bits,d,mu0,queries,distance,eta,delta,trial,commit_ms,open_ms,verify_ms,proof_bytes,wire_proof_bytes").unwrap();
+    writeln!(output,"mu,r,c,base_field_bits,security_bits,d,mu0,queries,distance,eta,delta,trial,commit_ms,open_ms,verify_ms,proof_bytes,wire_proof_bytes,storage").unwrap();
     let mut schedules = Vec::new();
     for &mu in &a.mu {
         for &r in &a.r {
@@ -85,6 +90,31 @@ fn main() {
                 if a.iters == 0 {
                     continue;
                 }
+                if a.storage == "bf64" {
+                    let pcs = BinaryHyperFoldPcs64::setup(config.clone(), [42; 32]);
+                    let mut rng = ChaCha8Rng::seed_from_u64(8);
+                    let message: Vec<_> = (0..1usize << mu)
+                        .map(|_| BF64::from_repr(rng.random::<u128>() as u64))
+                        .collect();
+                    let point: Vec<_> = (0..mu).map(|_| BF128::from_repr(rng.random())).collect();
+                    let value = sumcheck::evaluate_base(&message, &point);
+                    for trial in 0..a.warmup + a.iters {
+                        let owned = message.clone();
+                        let start = Instant::now();
+                        let (cm, data) = pcs.commit(owned);
+                        let commit = start.elapsed().as_secs_f64() * 1000.0;
+                        let start = Instant::now();
+                        let proof = pcs.open(&data, point.clone(), value);
+                        let open = start.elapsed().as_secs_f64() * 1000.0;
+                        let start = Instant::now();
+                        pcs.verify(&cm, point.clone(), value, &proof).unwrap();
+                        let verify = start.elapsed().as_secs_f64() * 1000.0;
+                        if trial >= a.warmup {
+                            writeln!(output,"{mu},{r},{c},{},{},{},{},{},{},{},{},{},{commit:.6},{open:.6},{verify:.6},{},{},bf64",a.base_field_bits,a.security_bits,config.d,config.mu_0,config.queries,config.distance,config.eta,config.delta,trial-a.warmup,cm.size_in_bytes()+proof.size_in_bytes(),bincode::serialized_size(&cm).unwrap() as usize+proof.wire_size_in_bytes()).unwrap();
+                        }
+                    }
+                    continue;
+                }
                 let pcs = BinaryHyperFoldPcs::setup(config.clone(), [42; 32]);
                 let mut rng = ChaCha8Rng::seed_from_u64(8);
                 let message: Vec<_> = (0..1usize << mu)
@@ -108,7 +138,7 @@ fn main() {
                     pcs.verify(&cm, point.clone(), value, &proof).unwrap();
                     let verify = start.elapsed().as_secs_f64() * 1000.0;
                     if trial >= a.warmup {
-                        writeln!(output,"{mu},{r},{c},{},{},{},{},{},{},{},{},{},{commit:.6},{open:.6},{verify:.6},{},{}",a.base_field_bits,a.security_bits,config.d,config.mu_0,config.queries,config.distance,config.eta,config.delta,trial-a.warmup,cm.size_in_bytes()+proof.size_in_bytes(),bincode::serialized_size(&cm).unwrap() as usize+proof.wire_size_in_bytes()).unwrap();
+                        writeln!(output,"{mu},{r},{c},{},{},{},{},{},{},{},{},{},{commit:.6},{open:.6},{verify:.6},{},{},bf128",a.base_field_bits,a.security_bits,config.d,config.mu_0,config.queries,config.distance,config.eta,config.delta,trial-a.warmup,cm.size_in_bytes()+proof.size_in_bytes(),bincode::serialized_size(&cm).unwrap() as usize+proof.wire_size_in_bytes()).unwrap();
                     }
                 }
             }

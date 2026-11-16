@@ -1,5 +1,6 @@
 pub mod parameters;
 pub mod pcs;
+pub type BF64 = p3_binary_field::BinaryField64;
 pub type BF128 = p3_binary_field::BinaryField128;
 pub mod adapters;
 pub mod code;

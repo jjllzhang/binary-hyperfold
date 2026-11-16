@@ -48,3 +48,40 @@ pub fn fold_table(table: &mut Vec<BF128>, bit: usize, alpha: BF128) {
     }
     table.truncate(table.len() / 2);
 }
+
+pub fn polynomial_base(f: &[crate::BF64], w: &[BF128], bit: usize) -> SumcheckPolynomial {
+    let stride = 1 << bit;
+    let coeff = (0..f.len() / 2)
+        .into_par_iter()
+        .fold(
+            || [BF128::ZERO; 3],
+            |mut c, pair| {
+                let j = (pair / stride) * (2 * stride) + pair % stride;
+                let a = f[j];
+                let b = a + f[j + stride];
+                let x = w[j];
+                let y = x + w[j + stride];
+                c[0] += x * a;
+                c[1] += y * a + x * b;
+                c[2] += y * b;
+                c
+            },
+        )
+        .reduce(
+            || [BF128::ZERO; 3],
+            |a, b| std::array::from_fn(|i| a[i] + b[i]),
+        );
+    SumcheckPolynomial(coeff)
+}
+
+/// Bind a variable from a native base table directly into a half-size extension table.
+pub fn fold_table_base(table: &[crate::BF64], bit: usize, alpha: BF128) -> Vec<BF128> {
+    let stride = 1 << bit;
+    (0..table.len() / 2)
+        .into_par_iter()
+        .map(|pair| {
+            let j = (pair / stride) * (2 * stride) + pair % stride;
+            BF128::from(table[j]) + alpha * (table[j] + table[j + stride])
+        })
+        .collect()
+}

@@ -7,3 +7,10 @@ pub fn encode(message: &[BF128], log_rate: usize) -> Vec<BF128> {
         .ntt_batch_borrowed(RowMajorMatrixView::new(message, 1), log_rate)
         .values
 }
+
+/// Same Cantor evaluation domain, computed natively over the base field.
+pub fn encode_64(message: &[crate::BF64], log_rate: usize) -> Vec<crate::BF64> {
+    LchNtt::default()
+        .ntt_batch_borrowed(RowMajorMatrixView::new(message, 1), log_rate)
+        .values
+}
