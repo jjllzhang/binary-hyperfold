@@ -6,6 +6,8 @@ An experimental implementation of Binary HyperFold, a multilinear polynomial com
 
 ## Usage
 
+Cargo builds in this repository default to `-C target-cpu=native` via `.cargo/config.toml`, including tests and benchmarks. Release builds also use thin LTO and a single codegen unit. Binaries built this way may not run on another CPU; for a portable build, override the repository setting with `RUSTFLAGS="-C target-cpu=generic"` when invoking Cargo.
+
 Run the PCS tests and parameter checks:
 
 ```sh

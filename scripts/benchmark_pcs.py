@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """One configuration per process; certify schedule before timing, keep all trials."""
-import argparse, json, os, pathlib, subprocess
+import argparse, json, pathlib, subprocess
 from derive_params import certify_schedule
 p=argparse.ArgumentParser()
 p.add_argument('--mu',default='20');p.add_argument('--r',default='2,4,8');p.add_argument('--c',default='2,4')
@@ -11,8 +11,7 @@ p.add_argument('--matrix',default='specialized',choices=['specialized','general'
 p.add_argument('--warmup',default='1');p.add_argument('--iters',default='3')
 p.add_argument('--out',required=True);a=p.parse_args()
 out=pathlib.Path(a.out);out.mkdir(exist_ok=False,parents=True)
-env=os.environ.copy();env['RUSTFLAGS']='-C target-cpu=native'
-subprocess.run(['cargo','build','--release','--bin','bench_pcs'],env=env,check=True)
+subprocess.run(['cargo','build','--release','--bin','bench_pcs'],check=True)
 for mu in a.mu.split(','):
  for r in a.r.split(','):
   for c in a.c.split(','):
