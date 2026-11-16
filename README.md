@@ -8,8 +8,12 @@ Self-contained **research prototype**, based on the privately supplied
 - Plonky3 pinned at `0d803737b681774186cd283b1fd2d8e493655c82`, no external path dependencies.
 - `BF128 = BinaryField128` in the tower basis (not GHASH raw bit representation).
 - Integer-ceiling analytic code-distance schedule, floating-point MCA query search, exact-rational
-  section 9.2 example checks. Auto base dimension is the smallest mu0 >= 4 with arity divisibility;
-  the paper example explicitly uses mu0=8. PrimalDual searches a grouped B_fine upper envelope
+  section 9.2 example checks. Auto base dimension is the admissible mu0 in [4,10] closest to 8
+  (ties choose the smaller value). It satisfies arity divisibility, leaves at least one recursive
+  layer, and keeps the base evaluation domain inside the encoding field. For mu24, r2/4/8 select
+  mu0=8/8/9; for mu20 all three select 8; for mu23/r4 the tie selects 7. Small inputs choose the
+  closest admissible lower value; an empty candidate set asserts. Explicit `--mu0` is unchanged,
+  including the paper example mu0=8. PrimalDual searches a grouped B_fine upper envelope
   jointly for primal/dual thresholds (not an exact B_fine/global-minimum solver).
 - Subfield bitplane maps, H2/H4 and unrolled H8, Cauchy baseline, additive RS, recursive encode/fold.
 - Interleaved degree-2 sumcheck, BLAKE3 BinaryChallenger, Plonky3 MerkleTreeMmcs, single and multipoint
@@ -117,7 +121,9 @@ matrix parameter exports. Actual native small-field proving only supports specia
 `NativePcs<B>` is monomorphized over BF16/BF32/BF64 (public aliases
 `BinaryHyperFoldPcs16`, `BinaryHyperFoldPcs32`, `BinaryHyperFoldPcs64`). Each path stores messages,
 top codewords, public twists and their inverses in its actual base-field type and recursively
-encodes natively. H coefficients remain GF(16)=F2^4 (`BinaryField4`), not `BinaryField16`.
+encodes natively. H2 uses GF(4) (`BinaryField2` or dedicated 2-bit maps); H4 uses GF(16)
+(`BinaryField4`), and H8 mixes both. These are the coefficient domains, not `BinaryField16`
+(which denotes F2^16).
 The first sumcheck/fold binds the base message straight into a half-length BF128 table; subsequent
 messages and oracles remain BF128. Bottom verification uses the same Cantor-domain encoder over
 the extension. Mixed products use the pinned Plonky3 implementations, without assumed speedups.
