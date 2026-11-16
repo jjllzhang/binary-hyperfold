@@ -2,6 +2,7 @@ pub mod error;
 pub mod proof;
 pub mod prover;
 pub mod verifier;
+pub mod weighted;
 use crate::{
     BF128, code::HyperFoldableCode, parameters::HyperFoldConfig, transcript::ProverTranscript,
 };
