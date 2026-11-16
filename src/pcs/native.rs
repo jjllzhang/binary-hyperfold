@@ -1,5 +1,5 @@
-//! Single-claim PCS with a native BF64 message and top oracle.
-//! Intermediate oracles and all challenges remain BF128. Top leaves hash 8-byte symbols.
+//! Single-claim PCS with a native BF16/BF32/BF64 message and top oracle.
+//! Intermediate oracles and all challenges remain BF128. Top leaves hash native-width symbols.
 use super::{
     Commitment, Tree, cap,
     error::VerifierError,
@@ -7,8 +7,12 @@ use super::{
     proof::{QueryOpening, RoundProof},
 };
 use crate::{
-    BF64, BF128,
-    code::{base_code, folding::eq_weights, native64::Code64},
+    BF16, BF32, BF64, BF128,
+    code::{
+        base_code,
+        folding::eq_weights,
+        native::{NativeCode, NativeField},
+    },
     parameters::HyperFoldConfig,
     sumcheck::{
         self,
@@ -18,6 +22,7 @@ use crate::{
 };
 use p3_blake3::Blake3;
 use p3_commit::{BatchOpeningRef, Mmcs};
+use p3_field::ExtensionField;
 use p3_matrix::{Dimensions, dense::RowMajorMatrix};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CompressionFunctionFromHasher, MerkleCap, SerializingHasher};
@@ -25,48 +30,51 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
-type Merkle64 = MerkleTreeMmcs<
-    BF64,
+type MerkleBase<B> = MerkleTreeMmcs<
+    B,
     u8,
     SerializingHasher<Blake3>,
     CompressionFunctionFromHasher<Blake3, 2, 32>,
     2,
     32,
 >;
-pub type Tree64 = <Merkle64 as Mmcs<BF64>>::ProverData<RowMajorMatrix<BF64>>;
-fn mmcs64() -> Merkle64 {
-    Merkle64::new(
+pub type TreeBase<B> = <MerkleBase<B> as Mmcs<B>>::ProverData<RowMajorMatrix<B>>;
+fn mmcs_base<B: NativeField>() -> MerkleBase<B> {
+    MerkleBase::new(
         SerializingHasher::new(Blake3),
         CompressionFunctionFromHasher::new(Blake3),
         0,
     )
 }
-fn cap64(root: [u8; 32]) -> MerkleCap<BF64, [u8; 32]> {
+fn cap_base<B: NativeField>(root: [u8; 32]) -> MerkleCap<B, [u8; 32]> {
     MerkleCap::new(vec![root])
 }
 
-pub struct ProverData64 {
-    pub message: Vec<BF64>,
-    pub tree: Tree64,
+pub struct ProverDataNative<B: NativeField> {
+    pub message: Vec<B>,
+    pub tree: TreeBase<B>,
     pub commitment: Commitment,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TopOpening64 {
-    pub values: Vec<BF64>,
+#[serde(bound = "")]
+pub struct TopOpening<B: NativeField> {
+    pub values: Vec<B>,
     pub path: Vec<[u8; 32]>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Query64 {
-    pub top: TopOpening64,
+#[serde(bound = "")]
+pub struct QueryNative<B: NativeField> {
+    pub top: TopOpening<B>,
     pub rest: Vec<QueryOpening>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Proof64 {
+#[serde(bound = "")]
+pub struct NativeProof<B: NativeField> {
     pub rounds: Vec<RoundProof>,
     pub final_table: Vec<BF128>,
-    pub queries: Vec<Query64>,
+    pub queries: Vec<QueryNative<B>>,
 }
-impl Proof64 {
+impl<B: NativeField> NativeProof<B> {
     pub fn size_in_bytes(&self) -> usize {
         self.rounds
             .iter()
@@ -77,7 +85,7 @@ impl Proof64 {
                 .queries
                 .iter()
                 .map(|q| {
-                    8 * q.top.values.len()
+                    (B::BITS / 8) * q.top.values.len()
                         + 32 * q.top.path.len()
                         + q.rest
                             .iter()
@@ -91,20 +99,28 @@ impl Proof64 {
     }
 }
 #[derive(Clone, Debug)]
-pub struct BinaryHyperFoldPcs64 {
+pub struct NativePcs<B: NativeField> {
     pub config: HyperFoldConfig,
-    pub code: Code64,
+    pub code: NativeCode<B>,
     pub seed: [u8; 32],
 }
-impl BinaryHyperFoldPcs64 {
+impl<B: NativeField> NativePcs<B>
+where
+    BF128: ExtensionField<B>,
+{
     pub fn setup(config: HyperFoldConfig, seed: [u8; 32]) -> Self {
         assert!(config.d > 0);
-        let code = Code64::setup(&config, &mut ChaCha8Rng::from_seed(seed));
+        let code = NativeCode::setup(&config, &mut ChaCha8Rng::from_seed(seed));
         Self { config, code, seed }
     }
     fn transcript(&self) -> ProverTranscript {
         // Distinct leaf encoding is explicitly domain-separated from the baseline.
-        let mut tr = ProverTranscript::new(b"binary-hyperfold-bf64-v1");
+        let mut tr = ProverTranscript::new(match B::BITS {
+            16 => b"binary-hyperfold-bf16-v1",
+            32 => b"binary-hyperfold-bf32-v1",
+            64 => b"binary-hyperfold-bf64-v1",
+            _ => unreachable!(),
+        });
         tr.observe_bytes(&bincode::serialize(&self.config).unwrap());
         tr.observe_bytes(&self.seed);
         tr
@@ -126,22 +142,28 @@ impl BinaryHyperFoldPcs64 {
         tr.observe(value);
         Some(tr)
     }
-    pub fn commit(&self, message: Vec<BF64>) -> (Commitment, ProverData64) {
-        let (root, tree) = mmcs64().commit_matrix(self.code.encode(self.config.d, &message));
+    pub fn commit(&self, message: Vec<B>) -> (Commitment, ProverDataNative<B>) {
+        let (root, tree) =
+            mmcs_base::<B>().commit_matrix(self.code.encode(self.config.d, &message));
         let root = root.roots()[0];
         let mut tr = self.transcript();
         tr.observe_bytes(&root);
         let z0 = tr.point(self.config.params.mu);
         let y0 = sumcheck::evaluate_base(&message, &z0);
         let cm = Commitment { root, z0, y0 };
-        let data = ProverData64 {
+        let data = ProverDataNative {
             message,
             tree,
             commitment: cm.clone(),
         };
         (cm, data)
     }
-    pub fn open(&self, data: &ProverData64, point: Vec<BF128>, value: BF128) -> Proof64 {
+    pub fn open(
+        &self,
+        data: &ProverDataNative<B>,
+        point: Vec<BF128>,
+        value: BF128,
+    ) -> NativeProof<B> {
         let c = &self.config;
         assert_eq!(point.len(), c.params.mu);
         debug_assert_eq!(sumcheck::evaluate_base(&data.message, &point), value);
@@ -180,8 +202,11 @@ impl BinaryHyperFoldPcs64 {
             }
             let root = if i > 1 {
                 let word = if trees.is_empty() {
-                    self.code
-                        .fold_top(i, mmcs64().get_matrices(&data.tree)[0], &eq_weights(&alpha))
+                    self.code.fold_top(
+                        i,
+                        mmcs_base::<B>().get_matrices(&data.tree)[0],
+                        &eq_weights(&alpha),
+                    )
                 } else {
                     self.code.fold(
                         i,
@@ -203,8 +228,8 @@ impl BinaryHyperFoldPcs64 {
         let mut queries = vec![];
         for _ in 0..c.queries {
             let mut j = tr.index(c.n[c.d - 1]);
-            let opening = mmcs64().open_batch(j, &data.tree);
-            let top = TopOpening64 {
+            let opening = mmcs_base::<B>().open_batch(j, &data.tree);
+            let top = TopOpening {
                 values: opening.opened_values[0].clone(),
                 path: opening.opening_proof,
             };
@@ -220,9 +245,9 @@ impl BinaryHyperFoldPcs64 {
                     path: opening.opening_proof,
                 });
             }
-            queries.push(Query64 { top, rest });
+            queries.push(QueryNative { top, rest });
         }
-        Proof64 {
+        NativeProof {
             rounds,
             final_table: f,
             queries,
@@ -233,7 +258,7 @@ impl BinaryHyperFoldPcs64 {
         cm: &Commitment,
         point: Vec<BF128>,
         value: BF128,
-        proof: &Proof64,
+        proof: &NativeProof<B>,
     ) -> Result<(), VerifierError> {
         if self.verify_inner(cm, &point, value, proof) {
             Ok(())
@@ -246,7 +271,7 @@ impl BinaryHyperFoldPcs64 {
         cm: &Commitment,
         point: &[BF128],
         value: BF128,
-        proof: &Proof64,
+        proof: &NativeProof<B>,
     ) -> bool {
         let c = &self.config;
         let r = c.params.r;
@@ -326,9 +351,9 @@ impl BinaryHyperFoldPcs64 {
         for q in &proof.queries {
             let mut j = tr.index(c.n[c.d - 1]);
             let rows = vec![q.top.values.clone()];
-            if mmcs64()
+            if mmcs_base::<B>()
                 .verify_batch(
-                    &cap64(cm.root),
+                    &cap_base::<B>(cm.root),
                     &[Dimensions {
                         width: r,
                         height: c.n[c.d - 1],
@@ -371,3 +396,13 @@ impl BinaryHyperFoldPcs64 {
         true
     }
 }
+
+pub type BinaryHyperFoldPcs16 = NativePcs<BF16>;
+pub type BinaryHyperFoldPcs32 = NativePcs<BF32>;
+pub type BinaryHyperFoldPcs64 = NativePcs<BF64>;
+pub type Proof64 = NativeProof<BF64>;
+pub type ProverData64 = ProverDataNative<BF64>;
+
+pub type Tree64 = TreeBase<BF64>;
+pub type TopOpening64 = TopOpening<BF64>;
+pub type Query64 = QueryNative<BF64>;
