@@ -120,7 +120,9 @@ top codewords, public twists and their inverses in its actual base-field type an
 encodes natively. H coefficients remain GF(16)=F2^4 (`BinaryField4`), not `BinaryField16`.
 The first sumcheck/fold binds the base message straight into a half-length BF128 table; subsequent
 messages and oracles remain BF128. Bottom verification uses the same Cantor-domain encoder over
-the extension. Mixed products use the pinned Plonky3 implementations, without assumed speedups.
+the extension. GF(16) basis images are a fixed compile-time table, not setup data; folding skips
+the redundant theta_0=1 product. Mixed products use the pinned Plonky3 implementations, without
+assumed speedups.
 The optional Flock adapter remains on its existing BF128 path.
 
 Top Merkle leaves hash native 2/4/8-byte elements, and native top query symbols use those same

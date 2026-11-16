@@ -33,7 +33,7 @@ macro_rules! native_field {
                 let mut out = 0 as $repr;
                 for i in 0..4 {
                     let plane = (bits >> i) & MASK;
-                    let image = (c * BinaryField4::from_repr(1 << i)).to_repr();
+                    let image = super::subfield::F16_IMAGES[c.to_repr() as usize][i];
                     for j in 0..4 {
                         out ^=
                             (plane & (0 as $repr).wrapping_sub(((image >> j) & 1) as $repr)) << j;
@@ -164,17 +164,23 @@ where
         let mut v = [B::ZERO; 8];
         v[..self.r].copy_from_slice(row);
         apply_h(&mut v[..self.r], true);
-        (0..self.r)
-            .map(|a| beta[a] * (self.inverse_twists[layer - 1][j * self.r + a] * v[a]))
-            .sum()
+        // theta_0 is fixed to one; top saves a base product, lower layers a mixed one.
+        let mut out = beta[0] * v[0];
+        for a in 1..self.r {
+            out += beta[a] * (self.inverse_twists[layer - 1][j * self.r + a] * v[a]);
+        }
+        out
     }
     pub fn fold_row(&self, layer: usize, j: usize, row: &[BF128], beta: &[BF128]) -> BF128 {
         let mut v = [BF128::ZERO; 8];
         v[..self.r].copy_from_slice(row);
         apply_h128(&mut v[..self.r], true);
-        (0..self.r)
-            .map(|a| beta[a] * (v[a] * self.inverse_twists[layer - 1][j * self.r + a]))
-            .sum()
+        // theta_0 is fixed to one; top saves a base product, lower layers a mixed one.
+        let mut out = beta[0] * v[0];
+        for a in 1..self.r {
+            out += beta[a] * (v[a] * self.inverse_twists[layer - 1][j * self.r + a]);
+        }
+        out
     }
     pub fn fold_top(
         &self,
