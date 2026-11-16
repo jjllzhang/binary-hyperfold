@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exact rational reproduction of specification section 9.2; no specification file is bundled."""
+"""Exact rational parameter checks and schedule verification."""
 from fractions import Fraction as F
 
 q = 1 << 128

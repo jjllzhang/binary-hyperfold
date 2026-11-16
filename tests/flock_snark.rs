@@ -8,6 +8,7 @@ use binary_hyperfold::{
 use p3_binary_field::TowerLevel;
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+
 #[test]
 fn field_bridge_matches_naive() {
     let mut rng = ChaCha8Rng::seed_from_u64(89);
@@ -18,25 +19,42 @@ fn field_bridge_matches_naive() {
         assert_eq!(from_flock(to_flock(a) * to_flock(b)), a * b);
     }
 }
+
 #[test]
 fn blake3_r1cs_roundtrip() {
     use flock_prover::r1cs_hashes::blake3;
     let log = 3;
     let r = blake3::build_block_r1cs(log);
-    let block = ([0u32; 8], [0u32; 16], 0, 64, 0);
-    let inputs = vec![block; 1 << log];
+    let inputs = vec![([0u32; 8], [0u32; 16], 0, 64, 0); 1 << log];
     let (z, a, b, zlin) = blake3::generate_witness_with_ab_packed_and_lincheck(&inputs, log);
-    let c = HyperFoldConfig::derive(&HyperFoldParams {
-        mu: r.m - 7,
-        r: 4,
-        ..Default::default()
-    })
-    .unwrap();
-    let pcs = BinaryHyperFoldPcs::setup(c, [61; 32]);
     let circuit = r.csc_lincheck_circuit();
-    let (proof, _) = prove_r1cs_with_binary_hyperfold(&r, &pcs, z, a, b, &zlin, circuit);
-    assert!(verify_r1cs_with_binary_hyperfold(&r, &pcs, &proof, circuit));
+    for arity in [2, 4, 8] {
+        let c = HyperFoldConfig::derive(&HyperFoldParams {
+            mu: r.m - 7,
+            r: arity,
+            ..Default::default()
+        })
+        .unwrap();
+        let pcs = BinaryHyperFoldPcs::setup(c, [61; 32]);
+        let (proof, _) = prove_r1cs_with_binary_hyperfold(
+            &r,
+            &pcs,
+            z.clone(),
+            a.clone(),
+            b.clone(),
+            &zlin,
+            circuit,
+        );
+        assert!(verify_r1cs_with_binary_hyperfold(&r, &pcs, &proof, circuit));
+        let mut bad = proof.clone();
+        bad.opening.base_polynomials[0].0[0] += BF128::from_repr(1);
+        assert!(!verify_r1cs_with_binary_hyperfold(&r, &pcs, &bad, circuit));
+        let mut bad = proof.clone();
+        bad.ring_switch[0].s_hat_v[0] += to_flock(BF128::from_repr(1));
+        assert!(!verify_r1cs_with_binary_hyperfold(&r, &pcs, &bad, circuit));
+    }
 }
+
 #[test]
 fn sha256_r1cs_roundtrip() {
     use flock_prover::r1cs_hashes::sha2;

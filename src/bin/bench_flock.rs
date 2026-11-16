@@ -68,7 +68,7 @@ fn main() {
         };
     let _ = r.statement_digest();
     eprintln!(
-        "witness_ms is fast witness/a/b/lincheck packing, excludes R1CS construction; total_prove_ms includes this amortized once-per-configuration measurement. Ligerito Fast100 versus HyperFold PCS target100; not a full-SNARK security certificate."
+        "witness_ms is fast witness/a/b/lincheck packing, excludes R1CS construction; total_prove_ms includes this amortized once-per-configuration measurement. Ligerito Fast100 versus HyperFold PCS target100; not a full-SNARK security certificate. HyperFold uses weighted ring-switch openings; open_ms includes the interleaved and bottom sumchecks."
     );
     let circuit = r.csc_lincheck_circuit();
     println!(
@@ -85,16 +85,16 @@ fn main() {
         for trial in 0..args.warmup + args.iters {
             let input = (z.clone(), a.clone(), b.clone());
             let start = Instant::now();
-            let (p, t) = prove_r1cs_with_binary_hyperfold(
+            let (proof, t) = prove_r1cs_with_binary_hyperfold(
                 &r, &pcs, input.0, input.1, input.2, &zlin, circuit,
             );
             let total = witness_ms + start.elapsed().as_secs_f64() * 1000.0;
             let start = Instant::now();
-            assert!(verify_r1cs_with_binary_hyperfold(&r, &pcs, &p, circuit));
+            assert!(verify_r1cs_with_binary_hyperfold(&r, &pcs, &proof, circuit));
             let verify = start.elapsed().as_secs_f64() * 1000.0;
             if trial >= args.warmup {
                 println!(
-                    "hyperfold,{},{},{},{arity},PCS-target100-PIOP-no-grind,{},{witness_ms:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{total:.6},{:.6},{verify:.6},{:.3}",
+                    "hyperfold-weighted,{},{},{},{arity},PCS-target100-PIOP-no-grind,{},{witness_ms:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{total:.6},{:.6},{verify:.6},{:.3}",
                     args.hash,
                     args.log2_batches,
                     r.m - 7,
@@ -105,7 +105,7 @@ fn main() {
                     t.ring_switch_ms,
                     t.open_ms,
                     count as f64 / total,
-                    p.wire_size_in_bytes() as f64 / 1000.0
+                    proof.wire_size_in_bytes() as f64 / 1000.0,
                 );
             }
         }
