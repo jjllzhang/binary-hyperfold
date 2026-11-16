@@ -66,12 +66,9 @@ impl HyperFoldableCode {
         let mut v = [BF128::ZERO; 8];
         v[..self.r].copy_from_slice(row);
         self.matrix.apply(&mut v[..self.r], true);
-        // The protocol fixes theta_0 = 1, so its inverse product is redundant.
-        let mut out = beta[0] * v[0];
-        for a in 1..self.r {
-            out += beta[a] * self.inverse_twists[layer - 1][j * self.r + a] * v[a];
-        }
-        out
+        (0..self.r)
+            .map(|a| beta[a] * self.inverse_twists[layer - 1][j * self.r + a] * v[a])
+            .sum()
     }
     pub fn fold(
         &self,
