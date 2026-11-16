@@ -9,11 +9,7 @@ pub fn derive(
     if matches!(p.distance_mode, DistanceMode::PrimalDual) {
         let (t, dual) = super::fine::chain(
             p.mu,
-            p.mu_0.unwrap_or_else(|| {
-                (4..=p.mu)
-                    .find(|m| (p.mu - m) % (p.r.ilog2() as usize) == 0)
-                    .unwrap()
-            }),
+            k[0].ilog2() as usize,
             p.r,
             p.c,
             p.base_field_bits,

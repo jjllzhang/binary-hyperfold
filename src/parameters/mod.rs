@@ -71,9 +71,14 @@ impl HyperFoldConfig {
         let mu_0 = if let Some(m) = p.mu_0 {
             m
         } else {
-            (4..=p.mu)
-                .find(|&m| (p.mu - m) % nu == 0)
-                .ok_or(ConfigError::Unsupported("mu0"))?
+            (4usize..=10)
+                .filter(|&m| {
+                    m + nu <= p.mu
+                        && (p.mu - m) % nu == 0
+                        && m + p.c.ilog2() as usize <= p.base_field_bits
+                })
+                .min_by_key(|&m| (m.abs_diff(8), m))
+                .expect("no admissible default mu0 near eight")
         };
         if mu_0 > p.mu || (p.mu - mu_0) % nu != 0 || p.mu >= usize::BITS as usize - 2 {
             return Err(ConfigError::Unsupported("dimension"));
@@ -113,7 +118,7 @@ impl HyperFoldConfig {
 mod tests {
     use super::*;
     #[test]
-    fn smallest_base_dimension() {
+    fn near_eight_base_dimension() {
         for mu in [18, 24] {
             let c = HyperFoldConfig::derive(&HyperFoldParams {
                 mu,
@@ -121,9 +126,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-            assert_eq!(c.mu_0, 6);
-            assert_eq!(c.d, (mu - 6) / 3);
-            assert_eq!(c.k[0], 64);
+            assert_eq!(c.mu_0, 9);
+            assert_eq!(c.d, (mu - 9) / 3);
+            assert_eq!(c.k[0], 512);
         }
     }
 }
@@ -132,15 +137,45 @@ mod tests {
 mod final_rule {
     use super::*;
     #[test]
-    fn lower_bound_four() {
-        for (mu, r, want) in [(20, 2, 4), (20, 4, 4), (20, 8, 5), (18, 8, 6)] {
-            let c = HyperFoldConfig::derive(&HyperFoldParams {
-                mu,
-                r,
-                ..Default::default()
-            })
-            .unwrap();
-            assert_eq!(c.mu_0, want);
+    fn nearest_eight_with_divisibility_and_small_inputs() {
+        for (mu, r, want) in [
+            (24, 2, 8),
+            (24, 4, 8),
+            (24, 8, 9),
+            (20, 2, 8),
+            (20, 4, 8),
+            (20, 8, 8),
+            (23, 4, 7),
+            (8, 2, 7),
+            (8, 4, 6),
+            (8, 8, 5),
+        ] {
+            for distance_mode in [DistanceMode::Analytic, DistanceMode::PrimalDual] {
+                let c = HyperFoldConfig::derive(&HyperFoldParams {
+                    mu,
+                    r,
+                    distance_mode,
+                    ..Default::default()
+                })
+                .unwrap();
+                assert_eq!(c.mu_0, want);
+                assert!(c.d >= 1);
+                assert!(c.mu_0 + c.params.c.ilog2() as usize <= c.params.base_field_bits);
+                assert_eq!(c.thresholds.len(), c.d + 1);
+                assert_eq!(c.thresholds[0], c.k[0]);
+                if matches!(distance_mode, DistanceMode::PrimalDual) {
+                    assert_eq!(c.dual_thresholds.len(), c.d + 1);
+                    assert_eq!(c.dual_thresholds[0], c.n[0] - c.k[0]);
+                }
+            }
         }
+        let explicit = HyperFoldConfig::derive(&HyperFoldParams {
+            mu: 24,
+            r: 4,
+            mu_0: Some(4),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(explicit.mu_0, 4);
     }
 }
