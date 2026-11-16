@@ -49,7 +49,10 @@ pub fn fold_table(table: &mut Vec<BF128>, bit: usize, alpha: BF128) {
     table.truncate(table.len() / 2);
 }
 
-pub fn polynomial_base(f: &[crate::BF64], w: &[BF128], bit: usize) -> SumcheckPolynomial {
+pub fn polynomial_base<B: p3_field::Field>(f: &[B], w: &[BF128], bit: usize) -> SumcheckPolynomial
+where
+    BF128: p3_field::ExtensionField<B>,
+{
     let stride = 1 << bit;
     let coeff = (0..f.len() / 2)
         .into_par_iter()
@@ -75,7 +78,10 @@ pub fn polynomial_base(f: &[crate::BF64], w: &[BF128], bit: usize) -> SumcheckPo
 }
 
 /// Bind a variable from a native base table directly into a half-size extension table.
-pub fn fold_table_base(table: &[crate::BF64], bit: usize, alpha: BF128) -> Vec<BF128> {
+pub fn fold_table_base<B: p3_field::Field>(table: &[B], bit: usize, alpha: BF128) -> Vec<BF128>
+where
+    BF128: p3_field::ExtensionField<B>,
+{
     let stride = 1 << bit;
     (0..table.len() / 2)
         .into_par_iter()

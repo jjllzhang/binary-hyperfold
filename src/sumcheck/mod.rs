@@ -28,7 +28,10 @@ pub fn evaluate(table: &[BF128], point: &[BF128]) -> BF128 {
     v[0]
 }
 
-pub fn evaluate_base(table: &[crate::BF64], point: &[BF128]) -> BF128 {
+pub fn evaluate_base<B: p3_field::Field>(table: &[B], point: &[BF128]) -> BF128
+where
+    BF128: p3_field::ExtensionField<B>,
+{
     assert_eq!(table.len(), 1 << point.len());
     if point.is_empty() {
         return BF128::from(table[0]);

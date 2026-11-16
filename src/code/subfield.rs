@@ -55,25 +55,11 @@ pub fn mul_zeta_inv(x: BF128) -> BF128 {
 /// Native tower GF(2^64) nibble map; the scalar itself is a GF(16) value.
 #[inline]
 pub fn mul_f16_const_64(x: BF64, c: BinaryField4) -> BF64 {
-    const MASK: u64 = 0x1111111111111111;
-    let bits = x.to_repr();
-    let mut out = 0u64;
-    for i in 0..4 {
-        let plane = (bits >> i) & MASK;
-        let image = (c * BinaryField4::from_repr(1 << i)).to_repr();
-        for j in 0..4 {
-            out ^= (plane & 0u64.wrapping_sub(((image >> j) & 1) as u64)) << j;
-        }
-    }
-    BF64::from_repr(out)
+    super::native::NativeField::mul_f16(x, c)
 }
 #[inline]
 pub fn mul_omega_64(x: BF64) -> BF64 {
-    // omega^2 = omega + 1, independently in every 2-bit tower chunk.
-    let bits = x.to_repr();
-    let lo = bits & 0x5555555555555555;
-    let hi = (bits >> 1) & 0x5555555555555555;
-    BF64::from_repr(hi | ((lo ^ hi) << 1))
+    super::native::NativeField::mul_omega(x)
 }
 #[inline]
 pub fn mul_omega_plus_1_64(x: BF64) -> BF64 {

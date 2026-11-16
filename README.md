@@ -102,42 +102,46 @@ logs, and rejects unsupported fast-field conditions. It currently limits fine se
 Run the independent verifier for **each** newly used configuration; matching the examples alone
 is not a numerical certificate for other configurations.
 
-`--base-field-bits 16|32|64|128` controls the encoding field (public twists and base-code domain);
-in the default `bf128` path, all challenges, folded tables, storage and proof field elements remain
-BF128. This is a scalar
-extension of the base-field code, **not** a narrow-storage/arithmetic optimization. Top benchmark
-inputs are sampled in the chosen subfield; reported bytes are actual 16-byte field payloads.
+`--base-field-bits 16|32|64|128` now uniquely selects native BF16/BF32/BF64/BF128
+storage and encoding arithmetic. Challenges and intermediate folded tables remain BF128.
+There is no `--storage` flag, wide-field override or silent fallback for small fields.
 The analytic setup bound usually cannot meet 100 bits with a small base field. Fine mode may work,
 for example `--mu 20 --mu0 8 --r 4 --c 2 --base-field-bits 32 --distance-mode primal-dual`.
 The fast method has explicit large-field preconditions and can report unsupported configurations;
-that is not a claim that no other bound or protocol parameter can work.
+that is not a claim that no other bound or protocol parameter can work. `--iters 0` only exports
+parameters, without setup/input allocation or storage restrictions; this mode also accepts general
+matrix parameter exports. Actual native small-field proving only supports specialized H matrices.
 
-## Native BF64 path
+## Native small-field paths
 
-`BinaryHyperFoldPcs64` and `bench_pcs --storage bf64 --base-field-bits 64` provide a
-single-claim, specialized-H alternative to the unchanged default `--storage bf128` path.
-The native path stores messages, top codewords, public twists and their inverses as BF64;
-recursive encoding uses BF64 arithmetic. H coefficients are typed GF(16) values and both
-64/128-bit circuits use only XOR and small-constant linear maps. The first sumcheck/fold binds
-the base message straight into a half-length BF128 table; subsequent messages and oracles
-remain BF128. Bottom verification uses the same Cantor-domain encoder over the extension.
+`NativePcs<B>` is monomorphized over BF16/BF32/BF64 (public aliases
+`BinaryHyperFoldPcs16`, `BinaryHyperFoldPcs32`, `BinaryHyperFoldPcs64`). Each path stores messages,
+top codewords, public twists and their inverses in its actual base-field type and recursively
+encodes natively. H coefficients remain GF(16)=F2^4 (`BinaryField4`), not `BinaryField16`.
+The first sumcheck/fold binds the base message straight into a half-length BF128 table; subsequent
+messages and oracles remain BF128. Bottom verification uses the same Cantor-domain encoder over
+the extension. Mixed products use the pinned Plonky3 implementations, without assumed speedups.
+The optional Flock adapter remains on its existing BF128 path.
 
-The top Merkle leaves hash native 8-byte elements, rather than 16-byte embedded elements.
-The native transcript has a separate domain tag. Roots/challenges are therefore not expected
-to match the baseline, although codewords and public twists agree after the tower embedding.
-Top query symbols use 8 bytes in the native proof payload, all other field symbols still use 16.
-This format and first-binding allocation change are part of the compared variant, not an
-isolated multiplication-kernel optimization or proof of a particular performance mechanism.
-Actual bincode size remains separately reported; the two proof types have different framing.
+Top Merkle leaves hash native 2/4/8-byte elements, and native top query symbols use those same
+widths. Other proof field symbols remain 16 bytes. Each native field has a separate transcript
+domain tag. Roots/challenges do not match the old embedded BF128 path; lifted codewords and twists
+do. Actual bincode framing is separately reported. Only single-claim native opening is implemented;
+the unchanged BF128 path also supports the existing multipoint/general-matrix interfaces.
 
 ```
+# Selects native BF64 automatically. Use fine parameters for the 100-bit setup target.
 RUSTFLAGS="-C target-cpu=native" cargo run --release --bin bench_pcs -- \
-  --mu 24 --r 4 --c 2 --base-field-bits 64 --distance-mode primal-dual \
-  --storage bf64 --threads 32
-# Repeat with --storage bf128 for the embedded baseline, keeping all other flags identical.
+  --mu 24 --r 4 --c 2 --base-field-bits 64 --distance-mode primal-dual --threads 32
+# Parameter-only example over the smaller field, without any proving/performance measurement.
+python3 scripts/derive_params.py --generate --mu 10 --r 4 --c 2 \
+  --base-field-bits 16 --distance-mode primal-dual --output /tmp/bf16-schedule.json
 ```
 
-Native BF64 support does not change the default Flock adapter, does not implement native BF32
-or general/Cauchy matrices, and does not establish a new security proof. Every measured schedule
-must still be exported and independently certified before it is used as a target-bit parameter.
-No native-versus-embedded performance result is claimed by this README alone.
+The historical native-BF64 versus embedded-BF128 comparison was measured at commit
+`55ad263ca1d90272cf76b3752b73a42fee6c5ed7`. Reproduce both sides using that frozen source/binary;
+its `--storage bf128|bf64` interface is deliberately removed from the current CLI. Do not substitute
+current-code timings into the historical report. Storage, mixed arithmetic, first-binding allocation
+and top-leaf representation changed together in that comparison, not just one multiplication kernel.
+No native-BF16/BF32 performance result or new security proof is claimed here. New parameter
+configurations still require the separate verifier before being labelled target-bit schedules.

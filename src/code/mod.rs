@@ -57,4 +57,5 @@ impl HyperFoldableCode {
     }
 }
 
-pub mod native64;
+pub mod native;
+pub use native as native64;
