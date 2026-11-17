@@ -1,5 +1,5 @@
 use super::{
-    BinaryHyperFoldPcs, Commitment, ProverData, Tree, mmcs,
+    BinaryHyperFoldPcs, Commitment, ProverData, Tree, commit_encoded, commit_folded, mmcs,
     multiproof::layer_indices,
     proof::{HyperFoldProof, QueryOpening, RoundProof},
 };
@@ -8,7 +8,7 @@ use crate::{
     code::folding::eq_weights,
     sumcheck::{
         self,
-        prover::{fold_table_with_scratch, polynomial_with_sum},
+        dense::{self, DenseProver},
     },
 };
 use p3_commit::Mmcs;
@@ -16,7 +16,7 @@ use p3_field::PrimeCharacteristicRing;
 
 impl BinaryHyperFoldPcs {
     pub fn commit(&self, message: Vec<BF128>) -> (Commitment, ProverData) {
-        let (root, tree) = mmcs().commit_matrix(self.code.encode(self.config.d, &message));
+        let (root, tree) = commit_encoded(&self.code, self.config.d, &message);
         let root = root.roots()[0];
         let mut tr = self.transcript();
         tr.observe_bytes(&root);
@@ -54,22 +54,26 @@ impl BinaryHyperFoldPcs {
             running += power * value;
             power *= gamma;
         }
-        let mut weight = sumcheck::combined_weights(&terms);
-        let mut f = data.message.clone();
-        let mut scratch = Vec::new();
+        let mut prover = DenseProver::new(&data.message, dense::combined_weights(&terms));
         let mut rounds = vec![];
         let mut trees: Vec<Tree> = vec![];
         for i in (1..=self.config.d).rev() {
             let bit = self.config.mu_0 + (i - 1) * self.config.nu;
             let mut polynomials = vec![];
             let mut alpha = vec![];
-            for _ in 0..self.config.nu {
-                let p = polynomial_with_sum(&f, &weight, bit, running);
+            for step in 0..self.config.nu {
+                let p = prover.polynomial(bit, running);
                 tr.observe_fields(&p.0);
                 let a = tr.sample();
                 running = p.evaluate(a);
-                fold_table_with_scratch(&mut f, bit, a, &mut scratch);
-                fold_table_with_scratch(&mut weight, bit, a, &mut scratch);
+                let next = if step + 1 < self.config.nu {
+                    Some(bit)
+                } else if i > 1 {
+                    Some(bit - self.config.nu)
+                } else {
+                    None
+                };
+                prover.bind(bit, a, next);
                 alpha.push(a);
                 polynomials.push(p);
             }
@@ -80,8 +84,7 @@ impl BinaryHyperFoldPcs {
                     trees.last().unwrap()
                 };
                 let matrix = mmcs().get_matrices(source)[0];
-                let (root, tree) =
-                    mmcs().commit_matrix(self.code.fold(i, matrix, &eq_weights(&alpha)));
+                let (root, tree) = commit_folded(&self.code, i, matrix, &eq_weights(&alpha));
                 let root = root.roots()[0];
                 tr.observe_bytes(&root);
                 trees.push(tree);
@@ -91,6 +94,7 @@ impl BinaryHyperFoldPcs {
             };
             rounds.push(RoundProof { polynomials, root });
         }
+        let f = prover.table();
         tr.observe_fields(&f);
         let indices = layer_indices(
             &mut tr,

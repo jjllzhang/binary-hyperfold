@@ -1,7 +1,7 @@
 //! Native base-field storage; extension folding starts only after challenges.
 use super::{
     base_code,
-    folding::{dot_product, fold_into_layout},
+    folding::{dot_product, finish_rows, fold_into_layout, fold_into_layout_with_sink},
     matrix_h::*,
 };
 use crate::{
@@ -10,6 +10,7 @@ use crate::{
 };
 use p3_binary_dft::ButterflyField;
 use p3_binary_field::{BinaryField4, TowerLevel};
+use p3_commit::RowSink;
 use p3_field::{Algebra, ExtensionField, PrimeCharacteristicRing, batch_multiplicative_inverse};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
@@ -143,26 +144,49 @@ where
         }
     }
     pub fn encode(&self, layer: usize, message: &[B]) -> RowMajorMatrix<B> {
+        self.encode_impl(layer, message, None)
+    }
+
+    /// Hand over only the requested layer's finished native-width rows.
+    pub fn encode_with_sink(
+        &self,
+        layer: usize,
+        message: &[B],
+        sink: &RowSink<'_, B>,
+    ) -> RowMajorMatrix<B> {
+        self.encode_impl(layer, message, Some(sink))
+    }
+
+    fn encode_impl(
+        &self,
+        layer: usize,
+        message: &[B],
+        sink: Option<&RowSink<'_, B>>,
+    ) -> RowMajorMatrix<B> {
         assert_eq!(message.len(), self.k[layer]);
         if layer == 0 {
-            return RowMajorMatrix::new(base_code::encode_native(message, self.log_rate), 1);
+            return if let Some(sink) = sink {
+                base_code::encode_native_with_sink(message, self.log_rate, sink)
+            } else {
+                RowMajorMatrix::new(base_code::encode_native(message, self.log_rate), 1)
+            };
         }
         let children: Vec<_> = message
             .par_chunks(self.k[layer - 1])
             .map(|m| self.encode(layer - 1, m))
             .collect();
-        let mut values = vec![B::ZERO; self.n[layer]];
-        values
-            .par_chunks_mut(self.r)
-            .enumerate()
-            .for_each(|(j, row)| {
+        finish_rows(
+            vec![B::ZERO; self.n[layer]],
+            self.r,
+            |j, row| {
                 row[0] = symbol(&children[0], j);
                 for a in 1..self.r {
                     row[a] = symbol(&children[a], j) * self.twists[layer - 1][j * self.r + a];
                 }
                 apply_h(row, false);
-            });
-        RowMajorMatrix::new(values, self.r)
+            },
+            sink,
+        )
     }
     pub fn fold_row_top(&self, layer: usize, j: usize, row: &[B], beta: &[BF128]) -> BF128 {
         let mut v = [B::ZERO; 8];
@@ -198,6 +222,38 @@ where
         }
         dot_product(self.r, beta, &v)
     }
+    /// Fold a native top oracle into BF128 and hand over destination rows once.
+    pub fn fold_top_with_sink(
+        &self,
+        layer: usize,
+        word: &RowMajorMatrix<B>,
+        beta: &[BF128],
+        sink: &RowSink<'_, BF128>,
+    ) -> RowMajorMatrix<BF128> {
+        fold_into_layout_with_sink(
+            word.values.len() / self.r,
+            if layer == 1 { 1 } else { self.r },
+            |j| self.fold_row_top(layer, j, &word.values[j * self.r..(j + 1) * self.r], beta),
+            Some(sink),
+        )
+    }
+
+    /// Fold an intermediate BF128 oracle and hand over destination rows once.
+    pub fn fold_with_sink(
+        &self,
+        layer: usize,
+        word: &RowMajorMatrix<BF128>,
+        beta: &[BF128],
+        sink: &RowSink<'_, BF128>,
+    ) -> RowMajorMatrix<BF128> {
+        fold_into_layout_with_sink(
+            word.values.len() / self.r,
+            if layer == 1 { 1 } else { self.r },
+            |j| self.fold_row(layer, j, &word.values[j * self.r..(j + 1) * self.r], beta),
+            Some(sink),
+        )
+    }
+
     pub fn fold_top(
         &self,
         layer: usize,
