@@ -1,5 +1,4 @@
 /target
-*.csv
 /Binary_*.md
 
 __pycache__/
