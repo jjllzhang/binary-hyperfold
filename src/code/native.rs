@@ -1,12 +1,16 @@
 //! Native base-field storage; extension folding starts only after challenges.
-use super::{base_code, folding::from_symbols, matrix_h::*};
+use super::{
+    base_code,
+    folding::{dot_product, fold_into_layout},
+    matrix_h::*,
+};
 use crate::{
     BF16, BF32, BF64, BF128,
     parameters::{HyperFoldConfig, MatrixKind},
 };
 use p3_binary_dft::ButterflyField;
 use p3_binary_field::{BinaryField4, TowerLevel};
-use p3_field::{ExtensionField, PrimeCharacteristicRing, batch_multiplicative_inverse};
+use p3_field::{Algebra, ExtensionField, PrimeCharacteristicRing, batch_multiplicative_inverse};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 use rand::{Rng, RngExt};
@@ -164,17 +168,35 @@ where
         let mut v = [B::ZERO; 8];
         v[..self.r].copy_from_slice(row);
         apply_h(&mut v[..self.r], true);
-        (0..self.r)
-            .map(|a| beta[a] * (self.inverse_twists[layer - 1][j * self.r + a] * v[a]))
-            .sum()
+        // Invert H and unscale in the native field, including for BF16/BF32.
+        // The first lane has inverse twist one and needs no multiplication.
+        for (a, value) in v.iter_mut().enumerate().take(self.r).skip(1) {
+            *value *= self.inverse_twists[layer - 1][j * self.r + a];
+        }
+        match self.r {
+            2 => <BF128 as Algebra<B>>::mixed_dot_product::<2>(
+                beta[..2].try_into().unwrap(),
+                v[..2].try_into().unwrap(),
+            ),
+            4 => <BF128 as Algebra<B>>::mixed_dot_product::<4>(
+                beta[..4].try_into().unwrap(),
+                v[..4].try_into().unwrap(),
+            ),
+            8 => <BF128 as Algebra<B>>::mixed_dot_product::<8>(
+                beta[..8].try_into().unwrap(),
+                v[..8].try_into().unwrap(),
+            ),
+            _ => panic!("arity"),
+        }
     }
     pub fn fold_row(&self, layer: usize, j: usize, row: &[BF128], beta: &[BF128]) -> BF128 {
         let mut v = [BF128::ZERO; 8];
         v[..self.r].copy_from_slice(row);
         apply_h128(&mut v[..self.r], true);
-        (0..self.r)
-            .map(|a| beta[a] * (v[a] * self.inverse_twists[layer - 1][j * self.r + a]))
-            .sum()
+        for (a, value) in v.iter_mut().enumerate().take(self.r).skip(1) {
+            *value *= self.inverse_twists[layer - 1][j * self.r + a];
+        }
+        dot_product(self.r, beta, &v)
     }
     pub fn fold_top(
         &self,
@@ -182,13 +204,11 @@ where
         word: &RowMajorMatrix<B>,
         beta: &[BF128],
     ) -> RowMajorMatrix<BF128> {
-        let values = word
-            .values
-            .par_chunks(self.r)
-            .enumerate()
-            .map(|(j, row)| self.fold_row_top(layer, j, row, beta))
-            .collect();
-        from_symbols(values, if layer == 1 { 1 } else { self.r })
+        fold_into_layout(
+            word.values.len() / self.r,
+            if layer == 1 { 1 } else { self.r },
+            |j| self.fold_row_top(layer, j, &word.values[j * self.r..(j + 1) * self.r], beta),
+        )
     }
     pub fn fold(
         &self,
@@ -196,13 +216,11 @@ where
         word: &RowMajorMatrix<BF128>,
         beta: &[BF128],
     ) -> RowMajorMatrix<BF128> {
-        let values = word
-            .values
-            .par_chunks(self.r)
-            .enumerate()
-            .map(|(j, row)| self.fold_row(layer, j, row, beta))
-            .collect();
-        from_symbols(values, if layer == 1 { 1 } else { self.r })
+        fold_into_layout(
+            word.values.len() / self.r,
+            if layer == 1 { 1 } else { self.r },
+            |j| self.fold_row(layer, j, &word.values[j * self.r..(j + 1) * self.r], beta),
+        )
     }
 }
 

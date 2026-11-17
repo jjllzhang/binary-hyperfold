@@ -5,6 +5,7 @@ use binary_hyperfold::{
     sumcheck,
 };
 use p3_binary_field::TowerLevel;
+use p3_field::PrimeCharacteristicRing;
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 #[test]
@@ -83,21 +84,45 @@ fn single_and_batched_roundtrip() {
 }
 #[test]
 fn sumcheck_matches_naive() {
-    use binary_hyperfold::sumcheck::prover::{fold_table, polynomial};
+    use binary_hyperfold::sumcheck::prover::{
+        fold_table_with_scratch, polynomial, polynomial_with_sum,
+    };
     let mut rng = ChaCha8Rng::seed_from_u64(99);
-    for n in [8, 16] {
-        for bit in 0..(n as usize).ilog2() as usize {
-            let f: Vec<_> = (0..n).map(|_| BF128::from_repr(rng.random())).collect();
-            let w: Vec<_> = (0..n).map(|_| BF128::from_repr(rng.random())).collect();
+    for mu in [0, 3, 13] {
+        let f: Vec<_> = (0..1usize << mu)
+            .map(|_| BF128::from_repr(rng.random()))
+            .collect();
+        let w: Vec<_> = (0..f.len())
+            .map(|_| BF128::from_repr(rng.random()))
+            .collect();
+        let point: Vec<_> = (0..mu).map(|_| BF128::from_repr(rng.random())).collect();
+        assert_eq!(
+            sumcheck::evaluate(&f, &point),
+            f.iter()
+                .zip(sumcheck::eq_table(&point))
+                .map(|(&a, b)| a * b)
+                .sum()
+        );
+        let sum = f.iter().zip(&w).map(|(&a, &b)| a * b).sum();
+        let mut scratch = Vec::new();
+        for bit in 0..mu {
             let p = polynomial(&f, &w, bit);
-            let alpha = BF128::from_repr(rng.random());
-            let (mut a, mut b) = (f, w);
-            fold_table(&mut a, bit, alpha);
-            fold_table(&mut b, bit, alpha);
-            assert_eq!(
-                p.evaluate(alpha),
-                a.iter().zip(b).map(|(&a, b)| a * b).sum()
-            );
+            assert_eq!(polynomial_with_sum(&f, &w, bit, sum).0, p.0);
+            for alpha in [BF128::ZERO, BF128::ONE, BF128::from_repr(rng.random())] {
+                let (mut a, mut b) = (f.clone(), w.clone());
+                fold_table_with_scratch(&mut a, bit, alpha, &mut scratch);
+                fold_table_with_scratch(&mut b, bit, alpha, &mut scratch);
+                let stride = 1 << bit;
+                let expected: Vec<_> = f
+                    .chunks_exact(2 * stride)
+                    .flat_map(|v| (0..stride).map(move |j| v[j] + alpha * (v[j] + v[j + stride])))
+                    .collect();
+                assert_eq!(a, expected);
+                assert_eq!(
+                    p.evaluate(alpha),
+                    a.iter().zip(b).map(|(&a, b)| a * b).sum()
+                );
+            }
         }
     }
 }

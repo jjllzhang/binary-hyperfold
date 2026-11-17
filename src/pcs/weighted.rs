@@ -10,7 +10,7 @@ use crate::{
     code::{base_code, folding::eq_weights},
     sumcheck::{
         self, SumcheckPolynomial,
-        prover::{fold_table, polynomial},
+        prover::{fold_table_with_scratch, polynomial_with_sum},
     },
     transcript::ProverTranscript,
 };
@@ -100,6 +100,8 @@ impl BinaryHyperFoldPcs {
             .expect("commitment mismatch");
         let gamma = tr.sample();
         let mut weight = sumcheck::eq_table(&data.commitment.z0);
+        let mut running = data.commitment.y0;
+        let mut terms = Vec::with_capacity(claims.len());
         let mut power = gamma;
         for claim in claims {
             let table = claim
@@ -115,12 +117,13 @@ impl BinaryHyperFoldPcs {
                     .sum::<BF128>(),
                 claim.value
             );
-            for (w, &b) in weight.iter_mut().zip(table) {
-                *w += power * b;
-            }
+            terms.push((table, power));
+            running += power * claim.value;
             power *= gamma;
         }
+        sumcheck::add_scaled_tables(&mut weight, &terms);
         let mut f = data.message.clone();
+        let mut scratch = Vec::new();
         let mut rounds = vec![];
         let mut trees: Vec<Tree> = vec![];
         for i in (1..=self.config.d).rev() {
@@ -128,11 +131,12 @@ impl BinaryHyperFoldPcs {
             let mut polynomials = vec![];
             let mut alpha = vec![];
             for _ in 0..self.config.nu {
-                let p = polynomial(&f, &weight, bit);
+                let p = polynomial_with_sum(&f, &weight, bit, running);
                 tr.observe_fields(&p.0);
                 let a = tr.sample();
-                fold_table(&mut f, bit, a);
-                fold_table(&mut weight, bit, a);
+                running = p.evaluate(a);
+                fold_table_with_scratch(&mut f, bit, a, &mut scratch);
+                fold_table_with_scratch(&mut weight, bit, a, &mut scratch);
                 alpha.push(a);
                 polynomials.push(p);
             }
@@ -158,11 +162,12 @@ impl BinaryHyperFoldPcs {
         tr.observe_fields(&final_table);
         let mut base_polynomials = Vec::with_capacity(self.config.mu_0);
         for _ in 0..self.config.mu_0 {
-            let p = polynomial(&f, &weight, 0);
+            let p = polynomial_with_sum(&f, &weight, 0, running);
             tr.observe_fields(&p.0);
             let a = tr.sample();
-            fold_table(&mut f, 0, a);
-            fold_table(&mut weight, 0, a);
+            running = p.evaluate(a);
+            fold_table_with_scratch(&mut f, 0, a, &mut scratch);
+            fold_table_with_scratch(&mut weight, 0, a, &mut scratch);
             base_polynomials.push(p);
         }
         let indices = layer_indices(

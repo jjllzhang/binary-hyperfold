@@ -17,13 +17,15 @@ use crate::{
     parameters::HyperFoldConfig,
     sumcheck::{
         self,
-        prover::{fold_table, fold_table_base, polynomial, polynomial_base},
+        prover::{
+            fold_table_base, fold_table_with_scratch, polynomial_base_with_sum, polynomial_with_sum,
+        },
     },
     transcript::ProverTranscript,
 };
 use p3_blake3::Blake3;
 use p3_commit::Mmcs;
-use p3_field::ExtensionField;
+use p3_field::{ExtensionField, PrimeCharacteristicRing};
 use p3_matrix::{Dimensions, dense::RowMajorMatrix};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CompressionFunctionFromHasher, MerkleCap, SerializingHasher};
@@ -169,11 +171,11 @@ where
             .claim_transcript(&data.commitment, &point, value)
             .unwrap();
         let gamma = tr.sample();
-        let mut weight = sumcheck::eq_table(&data.commitment.z0);
-        for (w, e) in weight.iter_mut().zip(sumcheck::eq_table(&point)) {
-            *w += gamma * e;
-        }
+        let mut weight =
+            sumcheck::combined_weights(&[(&data.commitment.z0, BF128::ONE), (&point, gamma)]);
+        let mut running = data.commitment.y0 + gamma * value;
         let mut f = vec![];
+        let mut scratch = Vec::new();
         let mut rounds = vec![];
         let mut trees: Vec<Tree> = vec![];
         for i in (1..=c.d).rev() {
@@ -183,18 +185,19 @@ where
             for step in 0..c.nu {
                 let first = i == c.d && step == 0;
                 let p = if first {
-                    polynomial_base(&data.message, &weight, bit)
+                    polynomial_base_with_sum(&data.message, &weight, bit, running)
                 } else {
-                    polynomial(&f, &weight, bit)
+                    polynomial_with_sum(&f, &weight, bit, running)
                 };
                 tr.observe_fields(&p.0);
                 let a = tr.sample();
+                running = p.evaluate(a);
                 if first {
                     f = fold_table_base(&data.message, bit, a);
                 } else {
-                    fold_table(&mut f, bit, a);
+                    fold_table_with_scratch(&mut f, bit, a, &mut scratch);
                 }
-                fold_table(&mut weight, bit, a);
+                fold_table_with_scratch(&mut weight, bit, a, &mut scratch);
                 alpha.push(a);
                 polynomials.push(p);
             }

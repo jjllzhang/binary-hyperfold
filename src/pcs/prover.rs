@@ -8,10 +8,11 @@ use crate::{
     code::folding::eq_weights,
     sumcheck::{
         self,
-        prover::{fold_table, polynomial},
+        prover::{fold_table_with_scratch, polynomial_with_sum},
     },
 };
 use p3_commit::Mmcs;
+use p3_field::PrimeCharacteristicRing;
 
 impl BinaryHyperFoldPcs {
     pub fn commit(&self, message: Vec<BF128>) -> (Commitment, ProverData) {
@@ -44,17 +45,18 @@ impl BinaryHyperFoldPcs {
             .claim_transcript(&data.commitment, points, values)
             .unwrap();
         let gamma = tr.sample();
-        let mut weight = sumcheck::eq_table(&data.commitment.z0);
+        let mut terms = vec![(data.commitment.z0.as_slice(), BF128::ONE)];
+        let mut running = data.commitment.y0;
         let mut power = gamma;
         for (point, &value) in points.iter().zip(values) {
             debug_assert_eq!(sumcheck::evaluate(&data.message, point), value);
-            let eq = sumcheck::eq_table(point);
-            for (w, e) in weight.iter_mut().zip(eq) {
-                *w += power * e
-            }
+            terms.push((point.as_slice(), power));
+            running += power * value;
             power *= gamma;
         }
+        let mut weight = sumcheck::combined_weights(&terms);
         let mut f = data.message.clone();
+        let mut scratch = Vec::new();
         let mut rounds = vec![];
         let mut trees: Vec<Tree> = vec![];
         for i in (1..=self.config.d).rev() {
@@ -62,11 +64,12 @@ impl BinaryHyperFoldPcs {
             let mut polynomials = vec![];
             let mut alpha = vec![];
             for _ in 0..self.config.nu {
-                let p = polynomial(&f, &weight, bit);
+                let p = polynomial_with_sum(&f, &weight, bit, running);
                 tr.observe_fields(&p.0);
                 let a = tr.sample();
-                fold_table(&mut f, bit, a);
-                fold_table(&mut weight, bit, a);
+                running = p.evaluate(a);
+                fold_table_with_scratch(&mut f, bit, a, &mut scratch);
+                fold_table_with_scratch(&mut weight, bit, a, &mut scratch);
                 alpha.push(a);
                 polynomials.push(p);
             }

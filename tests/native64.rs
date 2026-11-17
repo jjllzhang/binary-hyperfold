@@ -102,8 +102,11 @@ fn mixed_sumcheck_matches_lift() {
             sumcheck::evaluate_base(&f, &point),
             sumcheck::evaluate(&wide, &point)
         );
+        let sum = f.iter().zip(&w).map(|(&a, &b)| b * a).sum();
         for bit in 0..mu {
-            assert_eq!(polynomial_base(&f, &w, bit).0, polynomial(&wide, &w, bit).0);
+            let expected = polynomial(&wide, &w, bit).0;
+            assert_eq!(polynomial_base(&f, &w, bit).0, expected);
+            assert_eq!(polynomial_base_with_sum(&f, &w, bit, sum).0, expected);
             let mut folded = wide.clone();
             fold_table(&mut folded, bit, point[0]);
             assert_eq!(fold_table_base(&f, bit, point[0]), folded);

@@ -39,6 +39,35 @@ pub fn from_symbols(symbols: Vec<BF128>, width: usize) -> RowMajorMatrix<BF128> 
     });
     RowMajorMatrix::new(out, width)
 }
+/// Fold directly into the destination's row-major layout. Logical symbol
+/// `j + a * height` belongs in lane `a` of destination row `j`.
+pub(crate) fn fold_into_layout(
+    len: usize,
+    width: usize,
+    fold_symbol: impl Fn(usize) -> BF128 + Send + Sync,
+) -> RowMajorMatrix<BF128> {
+    let height = len / width;
+    let mut values = vec![BF128::ZERO; len];
+    values
+        .par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(j, row)| {
+            for (a, value) in row.iter_mut().enumerate() {
+                *value = fold_symbol(j + a * height);
+            }
+        });
+    RowMajorMatrix::new(values, width)
+}
+
+pub(crate) fn dot_product(r: usize, a: &[BF128], b: &[BF128]) -> BF128 {
+    match r {
+        2 => BF128::dot_product::<2>(a[..2].try_into().unwrap(), b[..2].try_into().unwrap()),
+        4 => BF128::dot_product::<4>(a[..4].try_into().unwrap(), b[..4].try_into().unwrap()),
+        8 => BF128::dot_product::<8>(a[..8].try_into().unwrap(), b[..8].try_into().unwrap()),
+        _ => panic!("arity"),
+    }
+}
+
 impl HyperFoldableCode {
     pub fn encode(&self, layer: usize, message: &[BF128]) -> RowMajorMatrix<BF128> {
         assert_eq!(message.len(), self.k[layer]);
@@ -66,9 +95,11 @@ impl HyperFoldableCode {
         let mut v = [BF128::ZERO; 8];
         v[..self.r].copy_from_slice(row);
         self.matrix.apply(&mut v[..self.r], true);
-        (0..self.r)
-            .map(|a| beta[a] * self.inverse_twists[layer - 1][j * self.r + a] * v[a])
-            .sum()
+        // Lane zero is untwisted by construction.
+        for (a, value) in v.iter_mut().enumerate().take(self.r).skip(1) {
+            *value *= self.inverse_twists[layer - 1][j * self.r + a];
+        }
+        dot_product(self.r, beta, &v)
     }
     pub fn fold(
         &self,
@@ -76,12 +107,10 @@ impl HyperFoldableCode {
         word: &RowMajorMatrix<BF128>,
         beta: &[BF128],
     ) -> RowMajorMatrix<BF128> {
-        let symbols: Vec<_> = word
-            .values
-            .par_chunks(self.r)
-            .enumerate()
-            .map(|(j, row)| self.fold_row(layer, j, row, beta))
-            .collect();
-        from_symbols(symbols, if layer == 1 { 1 } else { self.r })
+        fold_into_layout(
+            word.values.len() / self.r,
+            if layer == 1 { 1 } else { self.r },
+            |j| self.fold_row(layer, j, &word.values[j * self.r..(j + 1) * self.r], beta),
+        )
     }
 }
