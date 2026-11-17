@@ -1,4 +1,5 @@
 pub mod error;
+mod multiproof;
 pub mod proof;
 pub mod prover;
 pub mod verifier;

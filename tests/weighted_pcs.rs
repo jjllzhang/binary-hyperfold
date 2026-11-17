@@ -70,6 +70,11 @@ fn weighted_roundtrip_and_tampering() {
         pcs.verify_weighted(&cm, &claims, &proof).unwrap();
         assert_eq!(proof.base_polynomials.len(), 4);
         assert!(proof.size_in_bytes() <= proof.wire_size_in_bytes());
+        let decoded = bincode::deserialize(&bincode::serialize(&proof).unwrap()).unwrap();
+        pcs.verify_weighted(&cm, &claims, &decoded).unwrap();
+        let mut tampered = proof.clone();
+        tampered.paths.pop();
+        assert!(pcs.verify_weighted(&cm, &claims, &tampered).is_err());
         let mut tampered = proof.clone();
         tampered.base_polynomials[0].0[0] += BF128::ONE;
         assert!(pcs.verify_weighted(&cm, &claims, &tampered).is_err());

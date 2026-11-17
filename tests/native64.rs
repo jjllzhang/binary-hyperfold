@@ -138,9 +138,10 @@ fn native_pcs_happy_path_and_size() {
                 let d = pcs.config.d;
                 let fields = 3 * (mu - pcs.config.mu_0) + pcs.config.k[0] + q * (d - 1) * (r - 1);
                 let hashes = d - 1
-                    + q * pcs.config.n[..d]
+                    + proof
+                        .paths
                         .iter()
-                        .map(|n| n.ilog2() as usize)
+                        .map(|p| p.sibling_hashes.len())
                         .sum::<usize>();
                 assert_eq!(proof.size_in_bytes(), 16 * fields + 8 * q * r + 32 * hashes);
                 assert_eq!(

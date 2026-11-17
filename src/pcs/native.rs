@@ -4,6 +4,7 @@ use super::{
     Commitment, Tree, cap,
     error::VerifierError,
     mmcs,
+    multiproof::{MultiPath, layer_indices, path_bytes},
     proof::{QueryOpening, RoundProof},
 };
 use crate::{
@@ -21,7 +22,7 @@ use crate::{
     transcript::ProverTranscript,
 };
 use p3_blake3::Blake3;
-use p3_commit::{BatchOpeningRef, Mmcs};
+use p3_commit::Mmcs;
 use p3_field::ExtensionField;
 use p3_matrix::{Dimensions, dense::RowMajorMatrix};
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -59,7 +60,6 @@ pub struct ProverDataNative<B: NativeField> {
 #[serde(bound = "")]
 pub struct TopOpening<B: NativeField> {
     pub values: Vec<B>,
-    pub path: Vec<[u8; 32]>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -73,6 +73,7 @@ pub struct NativeProof<B: NativeField> {
     pub rounds: Vec<RoundProof>,
     pub final_table: Vec<BF128>,
     pub queries: Vec<QueryNative<B>>,
+    pub paths: Vec<MultiPath>,
 }
 impl<B: NativeField> NativeProof<B> {
     pub fn size_in_bytes(&self) -> usize {
@@ -86,13 +87,10 @@ impl<B: NativeField> NativeProof<B> {
                 .iter()
                 .map(|q| {
                     (B::BITS / 8) * q.top.values.len()
-                        + 32 * q.top.path.len()
-                        + q.rest
-                            .iter()
-                            .map(|v| 16 * v.values.len() + 32 * v.path.len())
-                            .sum::<usize>()
+                        + q.rest.iter().map(|v| 16 * v.values.len()).sum::<usize>()
                 })
                 .sum::<usize>()
+            + path_bytes(&self.paths)
     }
     pub fn wire_size_in_bytes(&self) -> usize {
         bincode::serialized_size(self).unwrap() as usize
@@ -225,32 +223,32 @@ where
             rounds.push(RoundProof { polynomials, root });
         }
         tr.observe_fields(&f);
-        let mut queries = vec![];
-        for _ in 0..c.queries {
-            let mut j = tr.index(c.n[c.d - 1]);
-            let opening = mmcs_base::<B>().open_batch(j, &data.tree);
-            let top = TopOpening {
-                values: opening.opened_values[0].clone(),
-                path: opening.opening_proof,
-            };
-            let mut rest = vec![];
-            for i in (1..c.d).rev() {
-                let omitted = j / c.n[i - 1];
-                j %= c.n[i - 1];
-                let opening = mmcs().open_batch(j, &trees[c.d - i - 1]);
-                let mut row = opening.opened_values[0].clone();
-                let _ = row.remove(omitted);
-                rest.push(QueryOpening {
-                    values: row,
-                    path: opening.opening_proof,
-                });
+        let indices = layer_indices(&mut tr, &c.n[..c.d], c.queries);
+        let (top_rows, top_path) = mmcs_base::<B>().open_multi_batch(&indices[0], &data.tree);
+        let mut queries: Vec<_> = top_rows
+            .into_iter()
+            .map(|rows| QueryNative {
+                top: TopOpening {
+                    values: rows.into_iter().next().unwrap(),
+                },
+                rest: vec![],
+            })
+            .collect();
+        let mut paths = vec![top_path];
+        for (layer, positions) in indices.iter().enumerate().skip(1) {
+            let (rows, path) = mmcs().open_multi_batch(positions, &trees[layer - 1]);
+            paths.push(path);
+            for (q, values) in rows.into_iter().enumerate() {
+                let mut row = values.into_iter().next().unwrap();
+                let _ = row.remove(indices[layer - 1][q] / c.n[c.d - layer - 1]);
+                queries[q].rest.push(QueryOpening { values: row });
             }
-            queries.push(QueryNative { top, rest });
         }
         NativeProof {
             rounds,
             final_table: f,
             queries,
+            paths,
         }
     }
     pub fn verify(
@@ -280,6 +278,7 @@ where
             || proof.rounds.len() != c.d
             || proof.final_table.len() != c.k[0]
             || proof.queries.len() != c.queries
+            || proof.paths.len() != c.d
         {
             return false;
         }
@@ -289,15 +288,11 @@ where
             }
         }
         for q in &proof.queries {
-            if q.top.values.len() != r
-                || q.top.path.len() != c.n[c.d - 1].ilog2() as usize
-                || q.rest.len() != c.d - 1
-            {
+            if q.top.values.len() != r || q.rest.len() != c.d - 1 {
                 return false;
             }
-            for (index, v) in q.rest.iter().enumerate() {
-                if v.values.len() != r - 1 || v.path.len() != c.n[c.d - index - 2].ilog2() as usize
-                {
+            for v in &q.rest {
+                if v.values.len() != r - 1 {
                     return false;
                 }
             }
@@ -348,48 +343,70 @@ where
         }
         let base = base_code::encode(&proof.final_table, c.params.c.ilog2() as usize);
         let betas: Vec<_> = challenges.iter().map(|a| eq_weights(a)).collect();
-        for q in &proof.queries {
-            let mut j = tr.index(c.n[c.d - 1]);
-            let rows = vec![q.top.values.clone()];
-            if mmcs_base::<B>()
-                .verify_batch(
-                    &cap_base::<B>(cm.root),
+        let indices = layer_indices(&mut tr, &c.n[..c.d], proof.queries.len());
+        let top_rows: Vec<_> = proof
+            .queries
+            .iter()
+            .map(|q| vec![q.top.values.clone()])
+            .collect();
+        if mmcs_base::<B>()
+            .verify_multi_batch(
+                &cap_base::<B>(cm.root),
+                &[Dimensions {
+                    width: r,
+                    height: c.n[c.d - 1],
+                }],
+                &indices[0],
+                &top_rows,
+                &proof.paths[0],
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let mut prev: Vec<_> = proof
+            .queries
+            .iter()
+            .enumerate()
+            .map(|(q, query)| {
+                self.code
+                    .fold_row_top(c.d, indices[0][q], &query.top.values, &betas[c.d - 1])
+            })
+            .collect();
+        for (layer, positions) in indices.iter().enumerate().skip(1) {
+            let i = c.d - layer;
+            let rows: Vec<Vec<BF128>> = proof
+                .queries
+                .iter()
+                .enumerate()
+                .map(|(q, query)| {
+                    let mut row = query.rest[layer - 1].values.clone();
+                    row.insert(indices[layer - 1][q] / c.n[i - 1], prev[q]);
+                    row
+                })
+                .collect();
+            let opened: Vec<_> = rows.iter().cloned().map(|row| vec![row]).collect();
+            if mmcs()
+                .verify_multi_batch(
+                    &cap(roots[layer]),
                     &[Dimensions {
                         width: r,
-                        height: c.n[c.d - 1],
+                        height: c.n[i - 1],
                     }],
-                    j,
-                    BatchOpeningRef::new(&rows, &q.top.path),
+                    positions,
+                    &opened,
+                    &proof.paths[layer],
                 )
                 .is_err()
             {
                 return false;
             }
-            let mut folded = self.code.fold_row_top(c.d, j, &rows[0], &betas[c.d - 1]);
-            for (index, v) in q.rest.iter().enumerate() {
-                let i = c.d - index - 1;
-                let col = j / c.n[i - 1];
-                j %= c.n[i - 1];
-                let mut row = v.values.clone();
-                row.insert(col, folded);
-                let rows = vec![row];
-                if mmcs()
-                    .verify_batch(
-                        &cap(roots[index + 1]),
-                        &[Dimensions {
-                            width: r,
-                            height: c.n[i - 1],
-                        }],
-                        j,
-                        BatchOpeningRef::new(&rows, &v.path),
-                    )
-                    .is_err()
-                {
-                    return false;
-                }
-                folded = self.code.fold_row(i, j, &rows[0], &betas[i - 1]);
+            for (q, row) in rows.iter().enumerate() {
+                prev[q] = self.code.fold_row(i, positions[q], row, &betas[i - 1]);
             }
-            if folded != base[j] {
+        }
+        for (q, &folded) in prev.iter().enumerate() {
+            if folded != base[indices[c.d - 1][q]] {
                 return false;
             }
         }
