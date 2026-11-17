@@ -176,8 +176,9 @@ where
             .map(|m| self.encode(layer - 1, m))
             .collect();
         finish_rows(
-            vec![B::ZERO; self.n[layer]],
+            self.n[layer],
             self.r,
+            B::ZERO,
             |j, row| {
                 row[0] = symbol(&children[0], j);
                 for a in 1..self.r {

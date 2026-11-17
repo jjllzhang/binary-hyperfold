@@ -58,8 +58,9 @@ pub(crate) fn fold_into_layout_with_sink(
 ) -> RowMajorMatrix<BF128> {
     let height = len / width;
     finish_rows(
-        vec![BF128::ZERO; len],
+        len,
         width,
+        BF128::ZERO,
         |j, row| {
             for (a, value) in row.iter_mut().enumerate() {
                 *value = fold_symbol(j + a * height);
@@ -72,44 +73,62 @@ pub(crate) fn fold_into_layout_with_sink(
 /// Finish and immediately hand over cache-sized blocks, not individual rows.
 /// The output allocation remains the oracle retained by the MMCS for openings.
 /// In particular, the sink is never called inside a row's arithmetic kernel.
-pub(crate) fn finish_rows<T: Clone + Send + Sync>(
-    mut values: Vec<T>,
+pub(crate) fn finish_rows<T: Copy + Send + Sync>(
+    len: usize,
     width: usize,
+    zero: T,
     finish_row: impl Fn(usize, &mut [T]) + Send + Sync,
     sink: Option<&RowSink<'_, T>>,
 ) -> RowMajorMatrix<T> {
-    assert!(width > 0);
-    assert_eq!(values.len() % width, 0);
-    if sink.is_none() {
-        // Preserve the recursive encoder's existing fine-grained scheduling.
-        values
-            .par_chunks_mut(width)
-            .enumerate()
-            .for_each(|(j, row)| finish_row(j, row));
-        return RowMajorMatrix::new(values, width);
+    assert!(width > 0 && len.is_multiple_of(width));
+    match width {
+        1 => finish_rows_fixed::<T, 1>(len, zero, &finish_row, sink),
+        2 => finish_rows_fixed::<T, 2>(len, zero, &finish_row, sink),
+        4 => finish_rows_fixed::<T, 4>(len, zero, &finish_row, sink),
+        8 => finish_rows_fixed::<T, 8>(len, zero, &finish_row, sink),
+        _ => panic!("unsupported oracle width"),
     }
-    let cache_rows = (256 * 1024 / (size_of::<T>().max(1) * width)).max(1);
-    let height = values.len() / width;
-    // Small intermediate oracles must still expose enough blocks to the pool.
-    // A fixed cache-sized tile would serialize their arithmetic and leaf hashing.
+}
+
+fn finish_rows_fixed<T: Copy + Send + Sync, const WIDTH: usize>(
+    len: usize,
+    zero: T,
+    finish_row: &(impl Fn(usize, &mut [T]) + Send + Sync),
+    sink: Option<&RowSink<'_, T>>,
+) -> RowMajorMatrix<T> {
+    let height = len / WIDTH;
+    // Reserve without clearing: every row is fully initialized in a local array
+    // before being published in the final matrix or passed to the Merkle sink.
+    let mut output = Vec::<[T; WIDTH]>::with_capacity(height);
+    let cache_rows = (256 * 1024 / (size_of::<T>().max(1) * WIDTH)).max(1);
     let task_rows = height
         .div_ceil(current_num_threads() * 4)
         .max(32)
         .next_power_of_two();
     let block_rows = cache_rows.min(task_rows);
-    values
-        .par_chunks_mut(block_rows * width)
+    output.spare_capacity_mut()[..height]
+        .par_chunks_mut(block_rows)
         .enumerate()
         .for_each(|(block, rows)| {
             let first_row = block * block_rows;
-            for (offset, row) in rows.chunks_exact_mut(width).enumerate() {
-                finish_row(first_row + offset, row);
+            for (offset, slot) in rows.iter_mut().enumerate() {
+                let mut row = [zero; WIDTH];
+                finish_row(first_row + offset, &mut row);
+                slot.write(row);
             }
             if let Some(sink) = sink {
-                sink(first_row, rows);
+                // SAFETY: every slot in this disjoint chunk was written above;
+                // arrays are contiguous without padding between their elements.
+                let finished = unsafe {
+                    std::slice::from_raw_parts(rows.as_ptr().cast::<T>(), rows.len() * WIDTH)
+                };
+                sink(first_row, finished);
             }
         });
-    RowMajorMatrix::new(values, width)
+    // SAFETY: Rayon returned successfully, so each slot in the spare capacity
+    // was initialized exactly once. On panic, len stays zero; T: Copy has no drop.
+    unsafe { output.set_len(height) };
+    RowMajorMatrix::new(output.into_flattened(), WIDTH)
 }
 
 pub(crate) fn dot_product(r: usize, a: &[BF128], b: &[BF128]) -> BF128 {
@@ -156,8 +175,9 @@ impl HyperFoldableCode {
             .map(|m| self.encode(layer - 1, m))
             .collect();
         finish_rows(
-            vec![BF128::ZERO; self.n[layer]],
+            self.n[layer],
             self.r,
+            BF128::ZERO,
             |j, row| {
                 row[0] = symbol(&children[0], j);
                 for a in 1..self.r {
