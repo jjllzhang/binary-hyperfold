@@ -5,6 +5,7 @@ use crate::{
     pcs::weighted::{TransparentWeight, WeightedClaim, WeightedHyperFoldProof},
     transcript::ProverTranscript,
 };
+use p3_maybe_rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 struct RingSwitchWeight {
@@ -66,7 +67,7 @@ pub fn prove_r1cs_with_binary_hyperfold(
     assert_eq!(z.len(), 1usize << (r.m - 7));
     let mut timing = PhaseTimings::default();
     let t = Instant::now();
-    let tower = z.iter().copied().map(from_flock).collect();
+    let tower = z.par_iter().copied().map(from_flock).collect();
     let (cm, data) = pcs.commit(tower);
     timing.commit_ms = elapsed(t);
     let mut ch = FsChallenger::new(b"binary-hyperfold-flock");
@@ -107,7 +108,7 @@ pub fn prove_r1cs_with_binary_hyperfold(
         let r_dprime = snapshot.sample_f128_vec(7);
         let eq_r_dprime = ring_switch::build_eq_split(&r_dprime, 7).0;
         let weight = RingSwitchWeight {
-            table: Some(out.rs_eq_ind.into_iter().map(from_flock).collect()),
+            table: Some(out.rs_eq_ind.into_par_iter().map(from_flock).collect()),
             z_vals: full[1..].to_vec(),
             eq_r_dprime,
         };

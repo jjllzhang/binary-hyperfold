@@ -47,8 +47,11 @@ where
     let ext = lift(&f);
     let w: Vec<_> = (0..256).map(|_| BF128::from_repr(rng.random())).collect();
     let point: Vec<_> = (0..8).map(|_| BF128::from_repr(rng.random())).collect();
+    let sum = f.iter().zip(&w).map(|(&a, &b)| b * a).sum();
     for bit in 0..8 {
-        assert_eq!(polynomial_base(&f, &w, bit).0, polynomial(&ext, &w, bit).0);
+        let expected = polynomial(&ext, &w, bit).0;
+        assert_eq!(polynomial_base(&f, &w, bit).0, expected);
+        assert_eq!(polynomial_base_with_sum(&f, &w, bit, sum).0, expected);
         let mut wide = ext.clone();
         fold_table(&mut wide, bit, point[0]);
         assert_eq!(fold_table_base(&f, bit, point[0]), wide);
