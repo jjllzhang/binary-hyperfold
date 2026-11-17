@@ -5,17 +5,93 @@ use crate::{
     pcs::weighted::{TransparentWeight, WeightedClaim, WeightedHyperFoldProof},
     transcript::ProverTranscript,
 };
+use p3_field::{Field, PackedValue};
 use p3_maybe_rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+// The same 16-byte lookup as Flock's internal deferred fold, using safe
+// indexing. Each table is built once per claim, not once per chunk.
+#[inline]
+fn fold_one_slot(element: F128, table: &[F128]) -> F128 {
+    debug_assert_eq!(table.len(), 16 * 256);
+    let bytes = (element.lo as u128 | ((element.hi as u128) << 64)).to_le_bytes();
+    let mut sums: [F128; 8] = std::array::from_fn(|i| {
+        table[(2 * i) * 256 + bytes[2 * i] as usize]
+            + table[(2 * i + 1) * 256 + bytes[2 * i + 1] as usize]
+    });
+    for stride in [4, 2, 1] {
+        for i in 0..stride {
+            sums[i] += sums[i + stride];
+        }
+    }
+    sums[0]
+}
+
+// The Flock batched prover retains the two equality factors; the 128-bit
+// ring-switch fold is reconstructed only for slots actually consumed by PCS.
 struct RingSwitchWeight {
-    table: Option<Vec<BF128>>,
+    table: Option<Vec<F128>>,
+    factors: Option<(Vec<F128>, Vec<F128>)>,
     z_vals: Vec<F128>,
     eq_r_dprime: Vec<F128>,
 }
 impl TransparentWeight for RingSwitchWeight {
     fn table(&self) -> Option<&[BF128]> {
-        self.table.as_deref()
+        None
+    }
+    fn add_scaled_into(&self, out: &mut [Ghash128], scale: BF128) {
+        if let Some(src) = &self.table {
+            assert_eq!(out.len(), src.len());
+            type P = <Ghash128 as Field>::Packing;
+            let scale = Ghash128::from(scale);
+            let factor = P::broadcast(scale);
+            out.par_chunks_mut(4096)
+                .zip(src.par_chunks(4096))
+                .for_each(|(dst, src)| {
+                    let mut j = 0;
+                    while j + P::WIDTH <= src.len() {
+                        let x = P::from_fn(|lane| {
+                            let v = src[j + lane];
+                            Ghash128::from_repr(v.lo as u128 | ((v.hi as u128) << 64))
+                        });
+                        *P::from_slice_mut(&mut dst[j..j + P::WIDTH]) += x * factor;
+                        j += P::WIDTH;
+                    }
+                    for (out, &v) in dst[j..].iter_mut().zip(&src[j..]) {
+                        *out += Ghash128::from_repr(v.lo as u128 | ((v.hi as u128) << 64)) * scale;
+                    }
+                });
+            return;
+        }
+        let (lo, hi) = self
+            .factors
+            .as_ref()
+            .expect("prover needs ring-switch factors");
+        assert_eq!(out.len(), lo.len() * hi.len());
+        let table = ring_switch::build_fold_byte_table(&self.eq_r_dprime);
+        let scale = Ghash128::from(scale);
+        type P = <Ghash128 as Field>::Packing;
+        let factor = P::broadcast(scale);
+        out.par_chunks_mut(4096)
+            .enumerate()
+            .for_each(|(chunk, dst)| {
+                let start = chunk * 4096;
+                let value_at = |index: usize| {
+                    let element = lo[index % lo.len()] * hi[index / lo.len()];
+                    let value = fold_one_slot(element, &table);
+                    // Flock F128 and Ghash128 use the same polynomial basis.
+                    Ghash128::from_repr(value.lo as u128 | ((value.hi as u128) << 64))
+                };
+                let mut j = 0;
+                while j + P::WIDTH <= dst.len() {
+                    let x = P::from_fn(|lane| value_at(start + j + lane));
+                    *P::from_slice_mut(&mut dst[j..j + P::WIDTH]) += x * factor;
+                    j += P::WIDTH;
+                }
+                for (offset, value) in dst[j..].iter_mut().enumerate() {
+                    *value += value_at(start + j + offset) * scale;
+                }
+            });
     }
     fn evaluate(&self, point: &[BF128]) -> BF128 {
         assert_eq!(point.len(), self.z_vals.len());
@@ -96,25 +172,59 @@ pub fn prove_r1cs_with_binary_hyperfold(
     let mut proofs = Vec::with_capacity(2);
     let mut weights = Vec::with_capacity(2);
     let mut values = Vec::with_capacity(2);
-    for claim in &claims {
-        let full = outer(&claim.point);
-        // The proof message is observed before the seven-word r'' challenge.
-        // Replay on a snapshot to obtain the prover-side succinct descriptor;
-        // verification obtains the same descriptor from verify_succinct.
+    if z.len() >= 1 << 21 && current_num_threads() >= 8 {
+        let fulls: Vec<_> = claims.iter().map(|claim| outer(&claim.point)).collect();
+        let refs: Vec<_> = fulls.iter().map(Vec::as_slice).collect();
+        // The batched prover defers the dense fold, but samples an extra Flock
+        // batch coefficient after both proofs. Use a snapshot, then replay
+        // only the original two-proof transcript on `ch`. PCS gamma is sampled
+        // later, after observing both weighted claims.
         let mut snapshot = ch.clone();
-        let (proof, out) = ring_switch::prove(&z, &full, &mut ch);
-        snapshot.observe_label(b"flock-ring-switch-v0");
-        snapshot.observe_f128_slice(&proof.s_hat_v);
-        let r_dprime = snapshot.sample_f128_vec(7);
-        let eq_r_dprime = ring_switch::build_eq_split(&r_dprime, 7).0;
-        let weight = RingSwitchWeight {
-            table: Some(out.rs_eq_ind.into_par_iter().map(from_flock).collect()),
-            z_vals: full[1..].to_vec(),
-            eq_r_dprime,
-        };
-        values.push(from_flock(out.sumcheck_claim));
-        weights.push(weight);
-        proofs.push(proof);
+        let (batch, _) = ring_switch::prove_batched(&z, &refs, &mut snapshot);
+        for ((claim, full), (proof, out)) in claims.iter().zip(&fulls).zip(batch) {
+            let descriptor = ring_switch::verify_succinct_with_grinding(
+                claim.value,
+                &claim.point.z_skip.weights(r.k_skip),
+                full,
+                &proof,
+                0,
+                &mut ch,
+            )
+            .expect("ring-switch prover returned an invalid claim");
+            debug_assert_eq!(out.sumcheck_claim, descriptor.sumcheck_claim);
+            let factors = match out.rs_eq_ind {
+                ring_switch::RsEqInd::DeferredDense { eq_lo, eq_hi, .. } => (eq_lo, eq_hi),
+                _ => panic!("ring-switch batch must return deferred dense factors"),
+            };
+            weights.push(RingSwitchWeight {
+                table: None,
+                factors: Some(factors),
+                z_vals: full[1..].to_vec(),
+                eq_r_dprime: descriptor.eq_r_dprime,
+            });
+            values.push(from_flock(descriptor.sumcheck_claim));
+            proofs.push(proof);
+        }
+    } else {
+        // For small instances or few workers, the materialized vector plus
+        // the packed GHASH combine wins over computing every slot on demand.
+        for claim in &claims {
+            let full = outer(&claim.point);
+            let mut snapshot = ch.clone();
+            let (proof, out) = ring_switch::prove(&z, &full, &mut ch);
+            snapshot.observe_label(b"flock-ring-switch-v0");
+            snapshot.observe_f128_slice(&proof.s_hat_v);
+            let r_dprime = snapshot.sample_f128_vec(7);
+            let eq_r_dprime = ring_switch::build_eq_split(&r_dprime, 7).0;
+            weights.push(RingSwitchWeight {
+                table: Some(out.rs_eq_ind),
+                factors: None,
+                z_vals: full[1..].to_vec(),
+                eq_r_dprime,
+            });
+            values.push(from_flock(out.sumcheck_claim));
+            proofs.push(proof);
+        }
     }
     timing.ring_switch_ms = elapsed(t);
     let inputs: Vec<_> = weights
@@ -187,6 +297,7 @@ pub fn verify_r1cs_with_binary_hyperfold(
         values.push(from_flock(out.sumcheck_claim));
         weights.push(RingSwitchWeight {
             table: None,
+            factors: None,
             z_vals: full[1..].to_vec(),
             eq_r_dprime: out.eq_r_dprime,
         });
@@ -221,11 +332,21 @@ mod tests {
         snapshot.observe_label(b"flock-ring-switch-v0");
         snapshot.observe_f128_slice(&proof.s_hat_v);
         let eq_r_dprime = ring_switch::build_eq_split(&snapshot.sample_f128_vec(7), 7).0;
+        let factors =
+            ring_switch::build_eq_split(&point[1..], ring_switch::split_n_lo(point.len() - 1));
         let weight = RingSwitchWeight {
-            table: Some(output.rs_eq_ind.iter().copied().map(from_flock).collect()),
+            table: None,
+            factors: Some(factors),
             z_vals: point[1..].to_vec(),
             eq_r_dprime,
         };
+        let dense: Vec<_> = output.rs_eq_ind.into_iter().map(from_flock).collect();
+        let scale = from_flock(F128::new(rng.random(), rng.random()));
+        let mut combined = vec![Ghash128::ZERO; dense.len()];
+        weight.add_scaled_into(&mut combined, scale);
+        for (&actual, &value) in combined.iter().zip(&dense) {
+            assert_eq!(actual, Ghash128::from(value * scale));
+        }
         for index in 0..z.len() {
             let query: Vec<_> = (0..4)
                 .map(|bit| {
@@ -236,7 +357,7 @@ mod tests {
                     }
                 })
                 .collect();
-            assert_eq!(weight.evaluate(&query), weight.table().unwrap()[index]);
+            assert_eq!(weight.evaluate(&query), dense[index]);
         }
         for _ in 0..8 {
             let query: Vec<BF128> = (0..4)
@@ -244,7 +365,7 @@ mod tests {
                 .collect();
             assert_eq!(
                 weight.evaluate(&query),
-                crate::sumcheck::evaluate(weight.table().unwrap(), &query)
+                crate::sumcheck::evaluate(&dense, &query)
             );
         }
     }

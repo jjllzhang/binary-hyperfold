@@ -1,3 +1,4 @@
+mod banked;
 pub mod error;
 mod multiproof;
 pub mod proof;

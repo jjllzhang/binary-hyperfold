@@ -10,6 +10,7 @@ use crate::{
         self,
         dense::{self, DenseProver},
     },
+    transcript::ProverTranscript,
 };
 use p3_commit::Mmcs;
 use p3_field::PrimeCharacteristicRing;
@@ -41,6 +42,17 @@ impl BinaryHyperFoldPcs {
     ) -> HyperFoldProof {
         assert!(!points.is_empty() && points.len() == values.len());
         assert!(points.iter().all(|p| p.len() == self.config.params.mu));
+        // For the measured large, single-point configurations, keeping only
+        // low-coordinate bank sums avoids the full GHASH weight table. Smaller
+        // and batched openings retain the dense prover and its scheduling.
+        if points.len() == 1
+            && self.config.params.mu >= 22
+            && self.config.params.c == 2
+            && self.config.params.matrix_kind == crate::parameters::MatrixKind::Specialized
+            && matches!(self.config.params.r, 4 | 8)
+        {
+            return self.open_banked(data, points[0].clone(), values[0]);
+        }
         let mut tr = self
             .claim_transcript(&data.commitment, points, values)
             .unwrap();
@@ -94,12 +106,23 @@ impl BinaryHyperFoldPcs {
             };
             rounds.push(RoundProof { polynomials, root });
         }
-        let f = prover.table();
+        self.finish_opening(data, tr, rounds, &trees, prover.table(), points.len())
+    }
+
+    pub(super) fn finish_opening(
+        &self,
+        data: &ProverData,
+        mut tr: ProverTranscript,
+        rounds: Vec<RoundProof>,
+        trees: &[Tree],
+        f: Vec<BF128>,
+        claims: usize,
+    ) -> HyperFoldProof {
         tr.observe_fields(&f);
         let indices = layer_indices(
             &mut tr,
             &self.config.n[..self.config.d],
-            self.query_count(points.len()),
+            self.query_count(claims),
         );
         let mut queries = vec![vec![]; indices[0].len()];
         let mut paths = vec![];

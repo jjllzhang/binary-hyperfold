@@ -14,16 +14,28 @@ use crate::{
     },
     transcript::ProverTranscript,
 };
+use p3_binary_field::Ghash128;
 use p3_commit::Mmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::Dimensions;
 use serde::{Deserialize, Serialize};
 
 /// Public, transcript-bound description of a multilinear weight. The prover
-/// also supplies its Boolean table; the verifier needs only succinct evaluation.
-/// The caller must construct both views from the same verified public statement.
+/// supplies either its Boolean table or a direct `add_scaled_into` implementation;
+/// the verifier needs only succinct evaluation. Both views must describe the
+/// same weight bound to the verified public statement.
 pub trait TransparentWeight {
+    /// A dense tower-basis table, if one is already available. Returning `None`
+    /// requires overriding `add_scaled_into` for the prover.
     fn table(&self) -> Option<&[BF128]>;
+    /// Add a scaled weight without requiring an intermediate tower-basis table.
+    /// Implementations without a dense table can override this method.
+    fn add_scaled_into(&self, out: &mut [Ghash128], scale: BF128) {
+        let table = self
+            .table()
+            .expect("prover needs the transparent weight table");
+        dense::add_scaled_tables(out, &[(table, scale)]);
+    }
     fn evaluate(&self, point: &[BF128]) -> BF128;
     fn observe(&self, transcript: &mut ProverTranscript);
 }
@@ -103,26 +115,32 @@ impl BinaryHyperFoldPcs {
         let mut weight = dense::combined_weights(&[(&data.commitment.z0, BF128::ONE)]);
         let mut running = data.commitment.y0;
         let mut terms = Vec::with_capacity(claims.len());
+        let mut deferred = Vec::new();
         let mut power = gamma;
         for claim in claims {
-            let table = claim
-                .weight
-                .table()
-                .expect("prover needs the transparent weight table");
-            assert_eq!(table.len(), data.message.len());
-            debug_assert_eq!(
-                data.message
-                    .iter()
-                    .zip(table)
-                    .map(|(&a, &b)| a * b)
-                    .sum::<BF128>(),
-                claim.value
-            );
-            terms.push((table, power));
+            if let Some(table) = claim.weight.table() {
+                assert_eq!(table.len(), data.message.len());
+                debug_assert_eq!(
+                    data.message
+                        .iter()
+                        .zip(table)
+                        .map(|(&a, &b)| a * b)
+                        .sum::<BF128>(),
+                    claim.value
+                );
+                terms.push((table, power));
+            } else {
+                deferred.push((claim.weight, power));
+            }
             running += power * claim.value;
             power *= gamma;
         }
-        dense::add_scaled_tables(&mut weight, &terms);
+        if !terms.is_empty() {
+            dense::add_scaled_tables(&mut weight, &terms);
+        }
+        for (weight_term, scale) in deferred {
+            weight_term.add_scaled_into(&mut weight, scale);
+        }
         let mut prover = DenseProver::new(&data.message, weight);
         let mut rounds = vec![];
         let mut trees: Vec<Tree> = vec![];
