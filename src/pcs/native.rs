@@ -1,7 +1,7 @@
 //! Single-claim PCS with a native BF16/BF32/BF64 message and top oracle.
 //! Intermediate oracles and all challenges remain BF128. Top leaves hash native-width symbols.
 use super::{
-    Commitment, Tree, cap,
+    Commitment, Tree, cap, commit_native_folded, commit_native_folded_top,
     error::VerifierError,
     mmcs,
     multiproof::{MultiPath, layer_indices, path_bytes},
@@ -17,9 +17,7 @@ use crate::{
     parameters::HyperFoldConfig,
     sumcheck::{
         self,
-        prover::{
-            fold_table_base, fold_table_with_scratch, polynomial_base_with_sum, polynomial_with_sum,
-        },
+        dense::{self, DenseProver},
     },
     transcript::ProverTranscript,
 };
@@ -143,6 +141,9 @@ where
         Some(tr)
     }
     pub fn commit(&self, message: Vec<B>) -> (Commitment, ProverDataNative<B>) {
+        // Native top rows are cheap to produce and hash. Keep the batch builder:
+        // per-row RowSink atomics outweighed cache reuse in the measured sizes.
+        // Intermediate BF128 oracles still use the streamed fold path below.
         let (root, tree) =
             mmcs_base::<B>().commit_matrix(self.code.encode(self.config.d, &message));
         let root = root.roots()[0];
@@ -171,11 +172,9 @@ where
             .claim_transcript(&data.commitment, &point, value)
             .unwrap();
         let gamma = tr.sample();
-        let mut weight =
-            sumcheck::combined_weights(&[(&data.commitment.z0, BF128::ONE), (&point, gamma)]);
+        let weight = dense::combined_weights(&[(&data.commitment.z0, BF128::ONE), (&point, gamma)]);
         let mut running = data.commitment.y0 + gamma * value;
-        let mut f = vec![];
-        let mut scratch = Vec::new();
+        let mut prover = DenseProver::native(weight);
         let mut rounds = vec![];
         let mut trees: Vec<Tree> = vec![];
         for i in (1..=c.d).rev() {
@@ -185,37 +184,44 @@ where
             for step in 0..c.nu {
                 let first = i == c.d && step == 0;
                 let p = if first {
-                    polynomial_base_with_sum(&data.message, &weight, bit, running)
+                    prover.polynomial_base(&data.message, bit, running)
                 } else {
-                    polynomial_with_sum(&f, &weight, bit, running)
+                    prover.polynomial(bit, running)
                 };
                 tr.observe_fields(&p.0);
                 let a = tr.sample();
                 running = p.evaluate(a);
-                if first {
-                    f = fold_table_base(&data.message, bit, a);
+                let next = if step + 1 < c.nu {
+                    Some(bit)
+                } else if i > 1 {
+                    Some(bit - c.nu)
                 } else {
-                    fold_table_with_scratch(&mut f, bit, a, &mut scratch);
+                    None
+                };
+                if first {
+                    prover.bind_base(&data.message, bit, a, next);
+                } else {
+                    prover.bind(bit, a, next);
                 }
-                fold_table_with_scratch(&mut weight, bit, a, &mut scratch);
                 alpha.push(a);
                 polynomials.push(p);
             }
             let root = if i > 1 {
-                let word = if trees.is_empty() {
-                    self.code.fold_top(
+                let (root, tree) = if trees.is_empty() {
+                    commit_native_folded_top(
+                        &self.code,
                         i,
                         mmcs_base::<B>().get_matrices(&data.tree)[0],
                         &eq_weights(&alpha),
                     )
                 } else {
-                    self.code.fold(
+                    commit_native_folded(
+                        &self.code,
                         i,
                         mmcs().get_matrices(trees.last().unwrap())[0],
                         &eq_weights(&alpha),
                     )
                 };
-                let (root, tree) = mmcs().commit_matrix(word);
                 let root = root.roots()[0];
                 tr.observe_bytes(&root);
                 trees.push(tree);
@@ -225,6 +231,7 @@ where
             };
             rounds.push(RoundProof { polynomials, root });
         }
+        let f = prover.table();
         tr.observe_fields(&f);
         let indices = layer_indices(&mut tr, &c.n[..c.d], c.queries);
         let (top_rows, top_path) = mmcs_base::<B>().open_multi_batch(&indices[0], &data.tree);

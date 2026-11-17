@@ -5,11 +5,18 @@ pub mod prover;
 pub mod verifier;
 pub mod weighted;
 use crate::{
-    BF128, code::HyperFoldableCode, parameters::HyperFoldConfig, transcript::ProverTranscript,
+    BF128,
+    code::{
+        HyperFoldableCode,
+        native::{NativeCode, NativeField},
+    },
+    parameters::HyperFoldConfig,
+    transcript::ProverTranscript,
 };
 use p3_blake3::Blake3;
 use p3_commit::Mmcs;
-use p3_matrix::dense::RowMajorMatrix;
+use p3_field::ExtensionField;
+use p3_matrix::{Dimensions, dense::RowMajorMatrix};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CompressionFunctionFromHasher, MerkleCap, SerializingHasher};
 use rand::SeedableRng;
@@ -31,6 +38,98 @@ pub fn mmcs() -> Merkle {
         0,
     )
 }
+/// Encode and commit the top oracle, retaining its matrix for openings.
+/// Stream large outputs; on small outputs the sink's per-row atomic bookkeeping
+/// can outweigh cache reuse (notably r=8), so keep the existing batch builder.
+pub fn commit_encoded(
+    code: &HyperFoldableCode,
+    layer: usize,
+    message: &[BF128],
+) -> (<Merkle as Mmcs<BF128>>::Commitment, Tree) {
+    if code.n[layer] * size_of::<BF128>() < 64 * 1024 * 1024 {
+        return mmcs().commit_matrix(code.encode(layer, message));
+    }
+    mmcs().commit_matrix_streamed(oracle_dimensions(code.n[layer], code.r, layer), |sink| {
+        code.encode_with_sink(layer, message, sink)
+    })
+}
+
+/// Fold layer `layer` into layer `layer - 1` and hash each finished block there.
+/// `beta` contains equality weights, just as for `HyperFoldableCode::fold`.
+pub fn commit_folded(
+    code: &HyperFoldableCode,
+    layer: usize,
+    word: &RowMajorMatrix<BF128>,
+    beta: &[BF128],
+) -> (<Merkle as Mmcs<BF128>>::Commitment, Tree) {
+    assert!(layer > 0);
+    mmcs().commit_matrix_streamed(
+        oracle_dimensions(code.n[layer - 1], code.r, layer - 1),
+        |sink| code.fold_with_sink(layer, word, beta, sink),
+    )
+}
+
+/// Opt-in native top streaming with the caller's MMCS and unchanged leaf bytes.
+/// `NativePcs::commit` keeps the batch path, which was faster in measured sizes.
+pub fn commit_native_encoded<B, MT>(
+    mmcs: &MT,
+    code: &NativeCode<B>,
+    layer: usize,
+    message: &[B],
+) -> (MT::Commitment, MT::ProverData<RowMajorMatrix<B>>)
+where
+    B: NativeField,
+    BF128: ExtensionField<B>,
+    MT: Mmcs<B>,
+{
+    mmcs.commit_matrix_streamed(oracle_dimensions(code.n[layer], code.r, layer), |sink| {
+        code.encode_with_sink(layer, message, sink)
+    })
+}
+
+/// Native top folding keeps H inversion and untwisting in the base field;
+/// only the completed destination oracle and its leaf hashes use BF128.
+pub fn commit_native_folded_top<B: NativeField>(
+    code: &NativeCode<B>,
+    layer: usize,
+    word: &RowMajorMatrix<B>,
+    beta: &[BF128],
+) -> (<Merkle as Mmcs<BF128>>::Commitment, Tree)
+where
+    BF128: ExtensionField<B>,
+{
+    assert!(layer > 0);
+    mmcs().commit_matrix_streamed(
+        oracle_dimensions(code.n[layer - 1], code.r, layer - 1),
+        |sink| code.fold_top_with_sink(layer, word, beta, sink),
+    )
+}
+
+/// Stream an intermediate BF128 fold of a native-field code into the usual MMCS.
+pub fn commit_native_folded<B: NativeField>(
+    code: &NativeCode<B>,
+    layer: usize,
+    word: &RowMajorMatrix<BF128>,
+    beta: &[BF128],
+) -> (<Merkle as Mmcs<BF128>>::Commitment, Tree)
+where
+    BF128: ExtensionField<B>,
+{
+    assert!(layer > 0);
+    mmcs().commit_matrix_streamed(
+        oracle_dimensions(code.n[layer - 1], code.r, layer - 1),
+        |sink| code.fold_with_sink(layer, word, beta, sink),
+    )
+}
+
+fn oracle_dimensions(len: usize, arity: usize, layer: usize) -> Dimensions {
+    let width = if layer == 0 { 1 } else { arity };
+    Dimensions {
+        width,
+        height: len / width,
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Commitment {
     pub root: [u8; 32],

@@ -1,6 +1,6 @@
 //! Transparent linear-functional openings. The original point-opening protocol is unchanged.
 use super::{
-    BinaryHyperFoldPcs, Commitment, ProverData, Tree, cap,
+    BinaryHyperFoldPcs, Commitment, ProverData, Tree, cap, commit_folded,
     error::VerifierError,
     mmcs,
     multiproof::{MultiPath, layer_indices, path_bytes},
@@ -10,11 +10,12 @@ use crate::{
     code::{base_code, folding::eq_weights},
     sumcheck::{
         self, SumcheckPolynomial,
-        prover::{fold_table_with_scratch, polynomial_with_sum},
+        dense::{self, DenseProver},
     },
     transcript::ProverTranscript,
 };
 use p3_commit::Mmcs;
+use p3_field::PrimeCharacteristicRing;
 use p3_matrix::Dimensions;
 use serde::{Deserialize, Serialize};
 
@@ -99,7 +100,7 @@ impl BinaryHyperFoldPcs {
             .weighted_transcript(&data.commitment, claims)
             .expect("commitment mismatch");
         let gamma = tr.sample();
-        let mut weight = sumcheck::eq_table(&data.commitment.z0);
+        let mut weight = dense::combined_weights(&[(&data.commitment.z0, BF128::ONE)]);
         let mut running = data.commitment.y0;
         let mut terms = Vec::with_capacity(claims.len());
         let mut power = gamma;
@@ -121,22 +122,29 @@ impl BinaryHyperFoldPcs {
             running += power * claim.value;
             power *= gamma;
         }
-        sumcheck::add_scaled_tables(&mut weight, &terms);
-        let mut f = data.message.clone();
-        let mut scratch = Vec::new();
+        dense::add_scaled_tables(&mut weight, &terms);
+        let mut prover = DenseProver::new(&data.message, weight);
         let mut rounds = vec![];
         let mut trees: Vec<Tree> = vec![];
         for i in (1..=self.config.d).rev() {
             let bit = self.config.mu_0 + (i - 1) * self.config.nu;
             let mut polynomials = vec![];
             let mut alpha = vec![];
-            for _ in 0..self.config.nu {
-                let p = polynomial_with_sum(&f, &weight, bit, running);
+            for step in 0..self.config.nu {
+                let p = prover.polynomial(bit, running);
                 tr.observe_fields(&p.0);
                 let a = tr.sample();
                 running = p.evaluate(a);
-                fold_table_with_scratch(&mut f, bit, a, &mut scratch);
-                fold_table_with_scratch(&mut weight, bit, a, &mut scratch);
+                let next = if step + 1 < self.config.nu {
+                    Some(bit)
+                } else if i > 1 {
+                    Some(bit - self.config.nu)
+                } else if self.config.mu_0 > 0 {
+                    Some(0)
+                } else {
+                    None
+                };
+                prover.bind(bit, a, next);
                 alpha.push(a);
                 polynomials.push(p);
             }
@@ -147,8 +155,7 @@ impl BinaryHyperFoldPcs {
                     trees.last().unwrap()
                 };
                 let matrix = mmcs().get_matrices(source)[0];
-                let (root, tree) =
-                    mmcs().commit_matrix(self.code.fold(i, matrix, &eq_weights(&alpha)));
+                let (root, tree) = commit_folded(&self.code, i, matrix, &eq_weights(&alpha));
                 let root = root.roots()[0];
                 tr.observe_bytes(&root);
                 trees.push(tree);
@@ -158,16 +165,15 @@ impl BinaryHyperFoldPcs {
             };
             rounds.push(super::proof::RoundProof { polynomials, root });
         }
-        let final_table = f.clone();
+        let final_table = prover.table();
         tr.observe_fields(&final_table);
         let mut base_polynomials = Vec::with_capacity(self.config.mu_0);
-        for _ in 0..self.config.mu_0 {
-            let p = polynomial_with_sum(&f, &weight, 0, running);
+        for step in 0..self.config.mu_0 {
+            let p = prover.polynomial(0, running);
             tr.observe_fields(&p.0);
             let a = tr.sample();
             running = p.evaluate(a);
-            fold_table_with_scratch(&mut f, 0, a, &mut scratch);
-            fold_table_with_scratch(&mut weight, 0, a, &mut scratch);
+            prover.bind(0, a, (step + 1 < self.config.mu_0).then_some(0));
             base_polynomials.push(p);
         }
         let indices = layer_indices(

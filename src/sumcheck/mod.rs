@@ -1,3 +1,4 @@
+pub(crate) mod dense;
 pub mod prover;
 use crate::BF128;
 use p3_field::PrimeCharacteristicRing;
@@ -78,7 +79,8 @@ pub fn eq_table(z: &[BF128]) -> Vec<BF128> {
     }
 }
 
-/// Merge dense transparent claims by output block, without a full-table pass per claim.
+/// Reference tower implementation for the equality/merge regression checks.
+#[cfg(test)]
 pub(crate) fn add_scaled_tables(weight: &mut [BF128], terms: &[(&[BF128], BF128)]) {
     assert!(terms.iter().all(|(table, _)| table.len() == weight.len()));
     let add = |start: usize, block: &mut [BF128]| {
