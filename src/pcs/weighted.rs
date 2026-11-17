@@ -1,5 +1,10 @@
 //! Transparent linear-functional openings. The original point-opening protocol is unchanged.
-use super::{BinaryHyperFoldPcs, Commitment, ProverData, Tree, cap, error::VerifierError, mmcs};
+use super::{
+    BinaryHyperFoldPcs, Commitment, ProverData, Tree, cap,
+    error::VerifierError,
+    mmcs,
+    multiproof::{MultiPath, layer_indices, path_bytes},
+};
 use crate::{
     BF128,
     code::{base_code, folding::eq_weights},
@@ -9,7 +14,7 @@ use crate::{
     },
     transcript::ProverTranscript,
 };
-use p3_commit::{BatchOpeningRef, Mmcs};
+use p3_commit::Mmcs;
 use p3_matrix::Dimensions;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +38,7 @@ pub struct WeightedHyperFoldProof {
     pub final_table: Vec<BF128>,
     pub base_polynomials: Vec<SumcheckPolynomial>,
     pub queries: Vec<Vec<super::proof::QueryOpening>>,
+    pub paths: Vec<MultiPath>,
 }
 impl WeightedHyperFoldProof {
     pub fn size_in_bytes(&self) -> usize {
@@ -45,8 +51,9 @@ impl WeightedHyperFoldProof {
                 .queries
                 .iter()
                 .flatten()
-                .map(|q| 16 * q.values.len() + 32 * q.path.len())
+                .map(|q| 16 * q.values.len())
                 .sum::<usize>()
+            + path_bytes(&self.paths)
     }
     pub fn wire_size_in_bytes(&self) -> usize {
         bincode::serialized_size(self).unwrap() as usize
@@ -158,38 +165,36 @@ impl BinaryHyperFoldPcs {
             fold_table(&mut weight, 0, a);
             base_polynomials.push(p);
         }
-        let mut queries = vec![];
-        for _ in 0..self.weighted_queries(claims.len()) {
-            let mut j = tr.index(self.config.n[self.config.d - 1]);
-            let mut layers = vec![];
-            let mut omitted = None;
-            for i in (1..=self.config.d).rev() {
-                let tree = if i == self.config.d {
-                    &data.tree
-                } else {
-                    &trees[self.config.d - i - 1]
-                };
-                let opening = mmcs().open_batch(j, tree);
-                let mut row = opening.opened_values[0].clone();
-                if let Some(col) = omitted {
-                    let _ = row.remove(col);
+        let indices = layer_indices(
+            &mut tr,
+            &self.config.n[..self.config.d],
+            self.weighted_queries(claims.len()),
+        );
+        let mut queries = vec![vec![]; indices[0].len()];
+        let mut paths = vec![];
+        for (layer, positions) in indices.iter().enumerate() {
+            let tree = if layer == 0 {
+                &data.tree
+            } else {
+                &trees[layer - 1]
+            };
+            let (rows, path) = mmcs().open_multi_batch(positions, tree);
+            paths.push(path);
+            for (q, values) in rows.into_iter().enumerate() {
+                let mut row = values.into_iter().next().unwrap();
+                if layer > 0 {
+                    let _ = row
+                        .remove(indices[layer - 1][q] / self.config.n[self.config.d - layer - 1]);
                 }
-                layers.push(super::proof::QueryOpening {
-                    values: row,
-                    path: opening.opening_proof,
-                });
-                if i > 1 {
-                    omitted = Some(j / self.config.n[i - 2]);
-                    j %= self.config.n[i - 2];
-                }
+                queries[q].push(super::proof::QueryOpening { values: row });
             }
-            queries.push(layers);
         }
         WeightedHyperFoldProof {
             rounds,
             final_table,
             base_polynomials,
             queries,
+            paths,
         }
     }
 
@@ -219,6 +224,7 @@ impl BinaryHyperFoldPcs {
             || proof.final_table.len() != c.k[0]
             || proof.base_polynomials.len() != c.mu_0
             || proof.queries.len() != self.weighted_queries(claims.len())
+            || proof.paths.len() != c.d
         {
             return false;
         }
@@ -232,10 +238,7 @@ impl BinaryHyperFoldPcs {
                 return false;
             }
             for (index, row) in query.iter().enumerate() {
-                let i = c.d - index;
-                if row.values.len() != if index == 0 { r } else { r - 1 }
-                    || row.path.len() != c.n[i - 1].ilog2() as usize
-                {
+                if row.values.len() != if index == 0 { r } else { r - 1 } {
                     return false;
                 }
             }
@@ -293,38 +296,46 @@ impl BinaryHyperFoldPcs {
         }
         let base = base_code::encode(&proof.final_table, c.params.c.ilog2() as usize);
         let betas: Vec<_> = challenges.iter().map(|alpha| eq_weights(alpha)).collect();
-        for query in &proof.queries {
-            let mut j = tr.index(c.n[c.d - 1]);
-            let mut prev = None;
-            for (index, opening) in query.iter().enumerate() {
-                let i = c.d - index;
-                let mut row = opening.values.clone();
-                if let Some((col, value)) = prev {
-                    row.insert(col, value);
-                }
-                let rows = vec![row];
-                if mmcs()
-                    .verify_batch(
-                        &cap(roots[index]),
-                        &[Dimensions {
-                            width: r,
-                            height: c.n[i - 1],
-                        }],
-                        j,
-                        BatchOpeningRef::new(&rows, &opening.path),
-                    )
-                    .is_err()
-                {
-                    return false;
-                }
-                let folded = self.code.fold_row(i, j, &rows[0], &betas[i - 1]);
+        let indices = layer_indices(&mut tr, &c.n[..c.d], proof.queries.len());
+        let mut prev = vec![BF128::default(); proof.queries.len()];
+        for (layer, positions) in indices.iter().enumerate() {
+            let i = c.d - layer;
+            let rows: Vec<Vec<BF128>> = proof
+                .queries
+                .iter()
+                .enumerate()
+                .map(|(q, query)| {
+                    let mut row = query[layer].values.clone();
+                    if layer > 0 {
+                        row.insert(indices[layer - 1][q] / c.n[i - 1], prev[q]);
+                    }
+                    row
+                })
+                .collect();
+            let opened: Vec<_> = rows.iter().cloned().map(|row| vec![row]).collect();
+            if mmcs()
+                .verify_multi_batch(
+                    &cap(roots[layer]),
+                    &[Dimensions {
+                        width: r,
+                        height: c.n[i - 1],
+                    }],
+                    positions,
+                    &opened,
+                    &proof.paths[layer],
+                )
+                .is_err()
+            {
+                return false;
+            }
+            for (q, row) in rows.iter().enumerate() {
+                let folded = self.code.fold_row(i, positions[q], row, &betas[i - 1]);
                 if i == 1 {
-                    if folded != base[j] {
+                    if folded != base[positions[q]] {
                         return false;
                     }
                 } else {
-                    prev = Some((j / c.n[i - 2], folded));
-                    j %= c.n[i - 2];
+                    prev[q] = folded;
                 }
             }
         }

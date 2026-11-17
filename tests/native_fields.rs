@@ -112,9 +112,10 @@ where
             let d = pcs.config.d;
             let fields = 3 * (8 - pcs.config.mu_0) + pcs.config.k[0] + q * (d - 1) * (r - 1);
             let hashes = d - 1
-                + q * pcs.config.n[..d]
+                + proof
+                    .paths
                     .iter()
-                    .map(|n| n.ilog2() as usize)
+                    .map(|p| p.sibling_hashes.len())
                     .sum::<usize>();
             assert_eq!(
                 proof.size_in_bytes(),
@@ -124,6 +125,14 @@ where
             assert_eq!(proof.wire_size_in_bytes(), bytes.len());
             let restored: NativeProof<B> = bincode::deserialize(&bytes).unwrap();
             pcs.verify(&cm, point.clone(), value, &restored).unwrap();
+            let mut bad = proof.clone();
+            bad.paths.pop();
+            assert!(pcs.verify(&cm, point.clone(), value, &bad).is_err());
+            if !proof.paths[0].sibling_hashes.is_empty() {
+                let mut bad = proof.clone();
+                bad.paths[0].sibling_hashes[0][0] ^= 1;
+                assert!(pcs.verify(&cm, point.clone(), value, &bad).is_err());
+            }
         }
     }
 }

@@ -1,12 +1,13 @@
 use super::{
-    BinaryHyperFoldPcs, Commitment, cap, error::VerifierError, mmcs, proof::HyperFoldProof,
+    BinaryHyperFoldPcs, Commitment, cap, error::VerifierError, mmcs, multiproof::layer_indices,
+    proof::HyperFoldProof,
 };
 use crate::{
     BF128,
     code::{base_code, folding::eq_weights},
     sumcheck,
 };
-use p3_commit::{BatchOpeningRef, Mmcs};
+use p3_commit::Mmcs;
 
 use p3_matrix::Dimensions;
 impl BinaryHyperFoldPcs {
@@ -48,6 +49,7 @@ impl BinaryHyperFoldPcs {
             || proof.rounds.len() != c.d
             || proof.final_table.len() != c.k[0]
             || proof.queries.len() != self.query_count(points.len())
+            || proof.paths.len() != c.d
         {
             return false;
         }
@@ -61,10 +63,7 @@ impl BinaryHyperFoldPcs {
                 return false;
             }
             for (index, row) in query.iter().enumerate() {
-                let i = c.d - index;
-                if row.values.len() != if index == 0 { r } else { r - 1 }
-                    || row.path.len() != c.n[i - 1].ilog2() as usize
-                {
+                if row.values.len() != if index == 0 { r } else { r - 1 } {
                     return false;
                 }
             }
@@ -124,38 +123,46 @@ impl BinaryHyperFoldPcs {
         }
         let base = base_code::encode(&proof.final_table, c.params.c.ilog2() as usize);
         let betas: Vec<_> = challenges.iter().map(|alpha| eq_weights(alpha)).collect();
-        for query in &proof.queries {
-            let mut j = tr.index(c.n[c.d - 1]);
-            let mut prev = None;
-            for (index, opening) in query.iter().enumerate() {
-                let i = c.d - index;
-                let mut row = opening.values.clone();
-                if let Some((col, value)) = prev {
-                    row.insert(col, value)
-                }
-                let rows = vec![row];
-                if mmcs()
-                    .verify_batch(
-                        &cap(roots[index]),
-                        &[Dimensions {
-                            width: r,
-                            height: c.n[i - 1],
-                        }],
-                        j,
-                        BatchOpeningRef::new(&rows, &opening.path),
-                    )
-                    .is_err()
-                {
-                    return false;
-                }
-                let folded = self.code.fold_row(i, j, &rows[0], &betas[i - 1]);
+        let indices = layer_indices(&mut tr, &c.n[..c.d], proof.queries.len());
+        let mut prev = vec![BF128::default(); proof.queries.len()];
+        for (layer, positions) in indices.iter().enumerate() {
+            let i = c.d - layer;
+            let rows: Vec<Vec<BF128>> = proof
+                .queries
+                .iter()
+                .enumerate()
+                .map(|(q, query)| {
+                    let mut row = query[layer].values.clone();
+                    if layer > 0 {
+                        row.insert(indices[layer - 1][q] / c.n[i - 1], prev[q]);
+                    }
+                    row
+                })
+                .collect();
+            let opened: Vec<_> = rows.iter().cloned().map(|row| vec![row]).collect();
+            if mmcs()
+                .verify_multi_batch(
+                    &cap(roots[layer]),
+                    &[Dimensions {
+                        width: r,
+                        height: c.n[i - 1],
+                    }],
+                    positions,
+                    &opened,
+                    &proof.paths[layer],
+                )
+                .is_err()
+            {
+                return false;
+            }
+            for (q, row) in rows.iter().enumerate() {
+                let folded = self.code.fold_row(i, positions[q], row, &betas[i - 1]);
                 if i == 1 {
-                    if folded != base[j] {
+                    if folded != base[positions[q]] {
                         return false;
                     }
                 } else {
-                    prev = Some((j / c.n[i - 2], folded));
-                    j %= c.n[i - 2];
+                    prev[q] = folded;
                 }
             }
         }

@@ -38,8 +38,39 @@ fn single_and_batched_roundtrip() {
                 let n = &pcs.config.n;
                 let fields =
                     3 * (p.mu - pcs.config.mu_0) + pcs.config.k[0] + q * (r + (d - 1) * (r - 1));
-                let hashes = d - 1 + q * n[..d].iter().map(|n| n.ilog2() as usize).sum::<usize>();
+                let hashes = d - 1
+                    + proof
+                        .paths
+                        .iter()
+                        .map(|p| p.sibling_hashes.len())
+                        .sum::<usize>();
                 assert_eq!(proof.size_in_bytes(), 16 * fields + 32 * hashes);
+                let unpruned = q * n[..d].iter().map(|n| n.ilog2() as usize).sum::<usize>();
+                assert!(hashes - (d - 1) <= unpruned);
+                if q > 2 {
+                    assert!(hashes - (d - 1) < unpruned);
+                }
+                assert_eq!(
+                    proof.wire_size_in_bytes(),
+                    bincode::serialize(&proof).unwrap().len()
+                );
+                let decoded = bincode::deserialize(&bincode::serialize(&proof).unwrap()).unwrap();
+                pcs.verify_batched(&cm, &points[..count], &values[..count], &decoded)
+                    .unwrap();
+                let mut bad = proof.clone();
+                bad.paths.pop();
+                assert!(
+                    pcs.verify_batched(&cm, &points[..count], &values[..count], &bad)
+                        .is_err()
+                );
+                let mut bad = proof.clone();
+                if let Some(hash) = bad.paths[0].sibling_hashes.first_mut() {
+                    hash[0] ^= 1;
+                    assert!(
+                        pcs.verify_batched(&cm, &points[..count], &values[..count], &bad)
+                            .is_err()
+                    );
+                }
                 let mut bad = proof.clone();
                 bad.final_table[0] += BF128::from_repr(1);
                 assert!(

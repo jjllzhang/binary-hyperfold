@@ -1,5 +1,6 @@
 use super::{
     BinaryHyperFoldPcs, Commitment, ProverData, Tree, mmcs,
+    multiproof::layer_indices,
     proof::{HyperFoldProof, QueryOpening, RoundProof},
 };
 use crate::{
@@ -88,37 +89,35 @@ impl BinaryHyperFoldPcs {
             rounds.push(RoundProof { polynomials, root });
         }
         tr.observe_fields(&f);
-        let mut queries = vec![];
-        for _ in 0..self.query_count(points.len()) {
-            let mut j = tr.index(self.config.n[self.config.d - 1]);
-            let mut layers = vec![];
-            let mut omitted = None;
-            for i in (1..=self.config.d).rev() {
-                let tree = if i == self.config.d {
-                    &data.tree
-                } else {
-                    &trees[self.config.d - i - 1]
-                };
-                let opening = mmcs().open_batch(j, tree);
-                let mut row = opening.opened_values[0].clone();
-                if let Some(col) = omitted {
-                    let _ = row.remove(col);
+        let indices = layer_indices(
+            &mut tr,
+            &self.config.n[..self.config.d],
+            self.query_count(points.len()),
+        );
+        let mut queries = vec![vec![]; indices[0].len()];
+        let mut paths = vec![];
+        for (layer, positions) in indices.iter().enumerate() {
+            let tree = if layer == 0 {
+                &data.tree
+            } else {
+                &trees[layer - 1]
+            };
+            let (rows, path) = mmcs().open_multi_batch(positions, tree);
+            paths.push(path);
+            for (q, values) in rows.into_iter().enumerate() {
+                let mut row = values.into_iter().next().unwrap();
+                if layer > 0 {
+                    let _ = row
+                        .remove(indices[layer - 1][q] / self.config.n[self.config.d - layer - 1]);
                 }
-                layers.push(QueryOpening {
-                    values: row,
-                    path: opening.opening_proof,
-                });
-                if i > 1 {
-                    omitted = Some(j / self.config.n[i - 2]);
-                    j %= self.config.n[i - 2];
-                }
+                queries[q].push(QueryOpening { values: row });
             }
-            queries.push(layers);
         }
         HyperFoldProof {
             rounds,
             final_table: f,
             queries,
+            paths,
         }
     }
 }
